@@ -1,5 +1,7 @@
 # dump 📄
 
+![dumpy](./assets/dump.png)
+
 A simple CLI tool that dumps text files from a directory into a format that's easy for LLMs to understand.
 
 ## Why?
@@ -8,6 +10,8 @@ When working with LLMs, you often need to provide multiple files as context. Thi
 - Walking through a directory recursively
 - Filtering out binary files and respecting `.gitignore`
 - Outputting text files in a structured XML-like format that LLMs can parse
+
+![demo](./assets/demo.gif)
 
 ## Installation
 
