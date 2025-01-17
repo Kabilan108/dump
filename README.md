@@ -1,6 +1,6 @@
 # dump 📄
 
-![dumpy](./assets/dump.png)
+<img src="./assets/dump.png" width="250" height="250" alt="dumpy">
 
 A simple CLI tool that dumps text files from a directory into a format that's easy for LLMs to understand.
 
