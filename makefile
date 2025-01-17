@@ -1,9 +1,12 @@
 
-build:
-	GO111MODULE=on go build -o dump .
+CXX = g++
+CXXFLAGS = -std=c++17 -O2
+TARGET = dump
 
-install:
-	GO111MODULE=on go install
+all: $(TARGET)
+
+$(TARGET): dump.cpp
+	$(CXX) $(CXXFLAGS) dump.cpp -o $(TARGET)
 
 clean:
-	rm -f dump
+	rm -f $(TARGET)
