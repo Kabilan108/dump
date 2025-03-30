@@ -1,0 +1,39 @@
+name: Release dump Binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release for Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build Linux Binary
+        run: |
+          BINARY_NAME="dump"
+          go build -ldflags="-s -w" -o $BINARY_NAME .
+        env:
+          GOOS: linux
+          GOARCH: amd64
+
+      - name: Create Release and Upload Binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
