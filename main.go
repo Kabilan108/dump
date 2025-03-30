@@ -119,6 +119,37 @@ func buildIgnoreList(baseDir string, extraPatterns []string) (*ignore.GitIgnore,
 }
 
 func main() {
+	// Custom flag parsing to handle flags appearing after positional arguments
+	args := os.Args[1:]
+
+	// First, collect all non-flag arguments
+	var globPatterns []string
+	var remainingArgs []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			// This is a flag, skip it and its value if it takes one
+			remainingArgs = append(remainingArgs, arg)
+			// Check if this flag needs a value
+			if (arg == "-f" || arg == "--filter" || arg == "-i" || arg == "--ignore") &&
+				i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				// Add the value for the flag
+				remainingArgs = append(remainingArgs, args[i+1])
+				i++ // Skip the value in the next iteration
+			}
+		} else {
+			// This is a positional argument (glob pattern)
+			globPatterns = append(globPatterns, arg)
+		}
+	}
+
+	// Reset os.Args to only include the program name and flags
+	// This allows flag.Parse() to work correctly even with flags after positional args
+	tempArgs := append([]string{os.Args[0]}, remainingArgs...)
+	os.Args = tempArgs
+
+	// Now parse flags normally
 	flag.Parse()
 
 	// if help is requested, show usage and exit
@@ -152,12 +183,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Get glob patterns from args
-	args := flag.Args()
-	var globPatterns []string
-	if len(args) > 0 {
-		globPatterns = args
-	} else {
+	// Use the collected glob patterns or default
+	if len(globPatterns) == 0 {
 		// Default to all files in current directory
 		globPatterns = []string{"**"}
 	}
