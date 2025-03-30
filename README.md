@@ -1,6 +1,6 @@
-# dump
+# dump 📄
 
-📄 [![Run Go Tests](https://github.com/Kabilan108/dump/actions/workflows/test.yml/badge.svg)](https://github.com/Kabilan108/dump/actions/workflows/test.yml)
+[![Run Go Tests](https://github.com/Kabilan108/dump/actions/workflows/test.yml/badge.svg)](https://github.com/Kabilan108/dump/actions/workflows/test.yml)
 
 <img src="./assets/dump.png" width="250" height="250" alt="dumpy">
 
