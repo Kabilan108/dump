@@ -1,4 +1,6 @@
-# dump 📄
+# dump
+
+📄 [![Run Go Tests](https://github.com/Kabilan108/dump/actions/workflows/test.yml/badge.svg)](https://github.com/Kabilan108/dump/actions/workflows/test.yml)
 
 <img src="./assets/dump.png" width="250" height="250" alt="dumpy">
 
@@ -14,6 +16,20 @@ When working with LLMs, you often need to provide multiple files as context. Thi
 ![demo](./assets/demo.gif)
 
 ## Installation
+
+### Option 1: Download from GitHub Releases
+
+```bash
+# Download the latest release for your platform from:
+# https://github.com/Kabilan108/dump/releases/latest
+
+# Example for Linux:
+curl -L https://github.com/Kabilan108/dump/releases/latest/download/dump_linux_amd64 -o dump
+chmod +x dump
+sudo mv dump /usr/local/bin/
+```
+
+### Option 2: Build from Source
 
 ```bash
 # Using go install
@@ -31,11 +47,17 @@ make build
 # Dump all text files from current directory
 dump
 
-# Specify a different directory
-dump -d /path/to/dir
+# Include specific files using glob patterns
+dump "*.go" "*.md"
 
 # Add ignore patterns (can use multiple times)
 dump -i "*.log" -i "node_modules"
+
+# Filter out lines matching a regex pattern
+dump -f "TODO|FIXME"
+
+# Combine options
+dump "*.go" -i "vendor" -f "^//.*"
 
 # Get help
 dump -h
