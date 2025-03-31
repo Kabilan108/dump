@@ -2,9 +2,6 @@
 package main
 
 import (
-	"bytes"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -147,34 +144,6 @@ temp/
 	}
 }
 
-// Helper function to capture stdout
-func captureOutput(t *testing.T, action func()) string {
-	t.Helper()
-	oldStdout := os.Stdout // Keep backup of the real stdout
-	r, w, err := os.Pipe() // Create a pipe
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	os.Stdout = w // Set stdout to the write end of the pipe
-
-	// Execute the action whose output we want to capture
-	action()
-
-	// Close the write end and restore stdout
-	w.Close()
-	os.Stdout = oldStdout
-
-	// Read everything from the read end of the pipe
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		// Log instead of Fatalf to ensure stdout is restored
-		log.Printf("Failed to read captured output: %v", err)
-	}
-	r.Close() // Close the read end
-
-	return buf.String()
-}
-
 func TestDumpFile(t *testing.T) {
 	// Create a temporary file with sample content
 	content := `Line 1
@@ -195,16 +164,48 @@ Line 5`
 	absolutePath := tmpFile.Name()
 	relativePath := "relative/path/to/file.txt"
 
-	t.Run("No Filter", func(t *testing.T) {
-		output := captureOutput(t, func() {
-			err := dumpFile(absolutePath, relativePath, nil) // No filter
-			if err != nil {
-				t.Errorf("dumpFile failed unexpectedly: %v", err)
-			}
-		})
+	// Helper function to compare content with line-by-line accuracy
+	compareContent := func(t *testing.T, got, expected string) {
+		t.Helper()
+		// Strip any trailing newlines from both strings before comparing
+		got = strings.TrimRight(got, "\n")
+		expected = strings.TrimRight(expected, "\n")
 
-		expectedStart := `<file path="relative/path/to/file.txt">` + "\n"
-		expectedEnd := "\n" + `</file>` + "\n" // Includes trailing newline
+		// Compare line by line to handle different line ending situations
+		gotLines := strings.Split(got, "\n")
+		expectedLines := strings.Split(expected, "\n")
+
+		if len(gotLines) != len(expectedLines) {
+			t.Errorf("Line count mismatch: got %d lines, expected %d lines",
+				len(gotLines), len(expectedLines))
+			return
+		}
+
+		for i, line := range expectedLines {
+			if gotLines[i] != line {
+				t.Errorf("Line %d mismatch:\nExpected: %q\nGot:      %q",
+					i+1, line, gotLines[i])
+			}
+		}
+	}
+
+	t.Run("No Filter", func(t *testing.T) {
+		// Create a slice to collect the output
+		var contents []string
+
+		err := dumpFile(&contents, absolutePath, relativePath, nil) // No filter
+		if err != nil {
+			t.Errorf("dumpFile failed unexpectedly: %v", err)
+		}
+
+		// Check we got exactly one output string
+		if len(contents) != 1 {
+			t.Fatalf("Expected 1 output string, got %d", len(contents))
+		}
+
+		output := contents[0]
+		expectedStart := `<file path='relative/path/to/file.txt'>` + "\n"
+		expectedEnd := `</file>` + "\n" // Includes trailing newline
 
 		if !strings.HasPrefix(output, expectedStart) {
 			t.Errorf("Output missing expected start:\nExpected prefix: %q\nGot: %q", expectedStart, output)
@@ -212,27 +213,32 @@ Line 5`
 		if !strings.HasSuffix(output, expectedEnd) {
 			t.Errorf("Output missing expected end:\nExpected suffix: %q\nGot: %q", expectedEnd, output)
 		}
-		// Check content between tags
+
+		// Extract and compare content between tags
 		contentInOutput := strings.TrimSuffix(strings.TrimPrefix(output, expectedStart), expectedEnd)
-		if contentInOutput != content {
-			t.Errorf("Output content mismatch:\nExpected:\n%s\nGot:\n%s", content, contentInOutput)
-		}
+		compareContent(t, contentInOutput, content)
 	})
 
 	t.Run("With Filter", func(t *testing.T) {
 		filterRegex := regexp.MustCompile(`secret`)
-		output := captureOutput(t, func() {
-			err := dumpFile(absolutePath, relativePath, filterRegex)
-			if err != nil {
-				t.Errorf("dumpFile with filter failed unexpectedly: %v", err)
-			}
-		})
+		var contents []string
 
+		err := dumpFile(&contents, absolutePath, relativePath, filterRegex)
+		if err != nil {
+			t.Errorf("dumpFile with filter failed unexpectedly: %v", err)
+		}
+
+		// Check we got exactly one output string
+		if len(contents) != 1 {
+			t.Fatalf("Expected 1 output string, got %d", len(contents))
+		}
+
+		output := contents[0]
 		expectedContent := `Line 1
 Line 3
 Line 5`
-		expectedStart := `<file path="relative/path/to/file.txt">` + "\n"
-		expectedEnd := "\n" + `</file>` + "\n" // Includes trailing newline
+		expectedStart := `<file path='relative/path/to/file.txt'>` + "\n"
+		expectedEnd := `</file>` + "\n"
 
 		if !strings.HasPrefix(output, expectedStart) {
 			t.Errorf("Filtered output missing expected start:\nExpected prefix: %q\nGot: %q", expectedStart, output)
@@ -240,14 +246,15 @@ Line 5`
 		if !strings.HasSuffix(output, expectedEnd) {
 			t.Errorf("Filtered output missing expected end:\nExpected suffix: %q\nGot: %q", expectedEnd, output)
 		}
+
+		// Extract and compare content between tags
 		contentInOutput := strings.TrimSuffix(strings.TrimPrefix(output, expectedStart), expectedEnd)
-		if contentInOutput != expectedContent {
-			t.Errorf("Filtered output content mismatch:\nExpected:\n%s\nGot:\n%s", expectedContent, contentInOutput)
-		}
+		compareContent(t, contentInOutput, expectedContent)
 	})
 
 	t.Run("Non-existent file", func(t *testing.T) {
-		err := dumpFile(filepath.Join(t.TempDir(), "non_existent"), "rel/path", nil)
+		var contents []string
+		err := dumpFile(&contents, filepath.Join(t.TempDir(), "non_existent"), "rel/path", nil)
 		if err == nil {
 			t.Error("Expected dumpFile to return an error for non-existent file, but got nil")
 		}
@@ -260,19 +267,20 @@ func processFile(path string, baseDir string, gitIgnore *ignore.GitIgnore, filte
 	if err != nil {
 		return
 	}
-	
+
 	// Skip ignored files
 	if gitIgnore.MatchesPath(relPath) {
 		return
 	}
-	
+
 	// Only dump text files
 	if !isTextFile(path) {
 		return
 	}
-	
+
 	// Dump file contents (without error checking for test simplicity)
-	_ = dumpFile(path, relPath, filter)
+	var contents []string
+	_ = dumpFile(&contents, path, relPath, filter)
 }
 
 func TestCompilePatterns(t *testing.T) {
@@ -306,19 +314,19 @@ func TestCompilePatterns(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			globs, err := compilePatterns(tc.patterns)
-			
+
 			if tc.wantErr {
 				if err == nil {
 					t.Error("Expected error but got nil")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Expected no error but got: %v", err)
 				return
 			}
-			
+
 			if len(globs) != len(tc.patterns) {
 				t.Errorf("Expected %d compiled patterns, got %d", len(tc.patterns), len(globs))
 			}
@@ -379,9 +387,9 @@ func TestMatchesAny(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			globs := compileTestPatterns(t, tc.patterns)
 			result := matchesAny(tc.path, globs)
-			
+
 			if result != tc.expected {
-				t.Errorf("matchesAny(%q, %v) = %v, expected %v", 
+				t.Errorf("matchesAny(%q, %v) = %v, expected %v",
 					tc.path, tc.patterns, result, tc.expected)
 			}
 		})
@@ -392,7 +400,7 @@ func TestConcurrentProcessing(t *testing.T) {
 	// This test checks the core functionality of the concurrent file processing system
 	// Create a simple file structure
 	tempDir := t.TempDir()
-	
+
 	files := []struct {
 		path    string
 		content string
@@ -402,29 +410,29 @@ func TestConcurrentProcessing(t *testing.T) {
 		{filepath.Join(tempDir, "README.md"), "# Test Project\n"},
 		{filepath.Join(tempDir, "data.txt"), "Some random text\n"},
 	}
-	
+
 	// Create the test files
 	for _, f := range files {
-		err := os.WriteFile(f.path, []byte(f.content), 0644)
+		err := os.WriteFile(f.path, []byte(f.content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file %s: %v", f.path, err)
 		}
 	}
-	
+
 	// Test the pattern matching with simple patterns
 	patterns := []string{"*.go", "*.md"}
 	matchedFiles := make(map[string]bool)
-	
+
 	// Compile patterns
 	globs, err := compilePatterns(patterns)
 	if err != nil {
 		t.Fatalf("Failed to compile patterns: %v", err)
 	}
-	
+
 	// Simulate the job queue and worker for file processing
 	var wg sync.WaitGroup
 	processed := make(chan string, len(files))
-	
+
 	// Start the worker goroutine that marks files as processed
 	go func() {
 		for path := range processed {
@@ -433,7 +441,7 @@ func TestConcurrentProcessing(t *testing.T) {
 			wg.Done()
 		}
 	}()
-	
+
 	// Only process files that match the patterns
 	for _, f := range files {
 		relPath, _ := filepath.Rel(tempDir, f.path)
@@ -442,26 +450,27 @@ func TestConcurrentProcessing(t *testing.T) {
 			processed <- f.path
 		}
 	}
-	
+
 	// Wait for all processing to complete
 	wg.Wait()
 	close(processed)
-	
+
 	// Verify expected matches
 	expectedMatches := map[string]bool{
 		"file1.go":  true,
 		"file2.go":  true,
 		"README.md": true,
 	}
-	
+
 	for filename, expected := range expectedMatches {
 		if matchedFiles[filename] != expected {
 			t.Errorf("Expected %s to be matched=%v, got %v", filename, expected, matchedFiles[filename])
 		}
 	}
-	
+
 	// data.txt should not be matched
 	if matchedFiles["data.txt"] {
 		t.Errorf("data.txt should not have been matched, but was")
 	}
 }
+

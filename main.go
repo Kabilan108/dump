@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +24,7 @@ var (
 	filterRegex  string
 	ignoreValues arrayFlags
 	helpFlag     bool
+	outputMutex  sync.Mutex
 )
 
 // arrayFlags is a helper type for collecting multiple -i/--ignore patterns.
@@ -145,27 +147,36 @@ func matchesAny(path string, globs []glob.Glob) bool {
 	return false
 }
 
-func dumpFile(path, relPath string, filter *regexp.Regexp) error {
+func dumpFile(contents *[]string, path, relPath string, filter *regexp.Regexp) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	fmt.Printf("<file path=\"%s\">\n", relPath)
+	var buf bytes.Buffer
+	buf.WriteString(fmt.Sprintf("<file path='%s'>\n", relPath))
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if filter != nil && filter.MatchString(line) {
 			continue
 		}
-		fmt.Println(line)
+		buf.WriteString(line)
+		buf.WriteByte('\n')
 	}
+
 	if err := scanner.Err(); err != nil {
 		return errors.New("error reading file content")
 	}
 
-	fmt.Println("</file>")
+	buf.WriteString("</file>\n")
+
+	outputMutex.Lock()
+	defer outputMutex.Unlock()
+	*contents = append(*contents, buf.String())
+
 	return nil
 }
 
@@ -208,6 +219,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	jobs := make(chan string, 100)
+	contents := []string{}
 
 	go func() {
 		for path := range jobs {
@@ -218,7 +230,7 @@ func main() {
 				if err != nil {
 					return
 				}
-				_ = dumpFile(p, relPath, filter)
+				_ = dumpFile(&contents, p, relPath, filter)
 			}(path)
 		}
 	}()
@@ -246,6 +258,9 @@ func main() {
 	})
 	close(jobs)
 	wg.Wait()
+	for _, c := range contents {
+		fmt.Fprintf(os.Stdout, c)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error walking directory: %v\n", err)
 		os.Exit(1)
