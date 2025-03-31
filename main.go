@@ -165,7 +165,7 @@ func dumpFile(path, relPath string, filter *regexp.Regexp) error {
 		return errors.New("error reading file content")
 	}
 
-	fmt.Println("</file>\n")
+	fmt.Println("</file>")
 	return nil
 }
 
