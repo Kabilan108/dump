@@ -206,22 +206,23 @@ func main() {
 	}
 
 	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return nil
 		}
 		relPath, err := filepath.Rel(baseDir, path)
 		if err != nil {
 			return nil
 		}
-
 		if gitIgnore.MatchesPath(relPath) {
-			return nil
-		}
-		if !isTextFile(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if len(globs) == 0 || matchesAny(relPath, globs) {
-			dumpFile(path, relPath, filter)
+			if isTextFile(path) && !d.IsDir() {
+				dumpFile(path, relPath, filter)
+			}
 		}
 		return nil
 	})
