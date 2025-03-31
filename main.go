@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/gobwas/glob"
 	"github.com/sabhiram/go-gitignore"
 )
 
@@ -93,49 +94,6 @@ func buildIgnoreList(baseDir string, extraPatterns []string) (*ignore.GitIgnore,
 	return ignore.CompileIgnoreLines(extraPatterns...), nil
 }
 
-func processFile(
-	path, baseDir string, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
-) {
-	relPath, err := filepath.Rel(baseDir, path)
-	if err != nil {
-		relPath = path
-	}
-	if gitIgnore.MatchesPath(relPath) {
-		return
-	}
-	if !isTextFile(path) {
-		return
-	}
-	err = dumpFile(path, relPath, filter)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error dumping file '%s': %v\n", relPath, err)
-	}
-}
-
-func dumpFile(absolutePath, relativePath string, filter *regexp.Regexp) error {
-	file, err := os.Open(absolutePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	fmt.Printf("<file path=\"%s\">\n", relativePath)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if filter != nil && filter.MatchString(line) {
-			continue
-		}
-		fmt.Println(line)
-	}
-	if err := scanner.Err(); err != nil {
-		return errors.New("error reading file content")
-	}
-
-	fmt.Println("</file>\n")
-	return nil
-}
-
 // flag parsing to handle flags appearing after positional arguments
 func parseNonFlagArgs() []string {
 	args := os.Args[1:]
@@ -165,8 +123,53 @@ func parseNonFlagArgs() []string {
 	return globPatterns
 }
 
+func compilePatterns(patterns []string) ([]glob.Glob, error) {
+	var globs []glob.Glob
+	for _, p := range patterns {
+		g, err := glob.Compile(p, '/')
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", p, err)
+		}
+		globs = append(globs, g)
+	}
+	return globs, nil
+}
+
+func matchesAny(path string, globs []glob.Glob) bool {
+	for _, g := range globs {
+		if g.Match(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func dumpFile(path, relPath string, filter *regexp.Regexp) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	fmt.Printf("<file path=\"%s\">\n", relPath)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if filter != nil && filter.MatchString(line) {
+			continue
+		}
+		fmt.Println(line)
+	}
+	if err := scanner.Err(); err != nil {
+		return errors.New("error reading file content")
+	}
+
+	fmt.Println("</file>\n")
+	return nil
+}
+
 func main() {
-	globPatterns := parseNonFlagArgs()
+	patterns := parseNonFlagArgs()
 	flag.Parse()
 
 	if helpFlag {
@@ -174,19 +177,25 @@ func main() {
 		os.Exit(0)
 	}
 
-	var filter *regexp.Regexp
-	var err error
+	filter := (*regexp.Regexp)(nil)
 	if filterRegex != "" {
-		filter, err = regexp.Compile(filterRegex)
+		r, err := regexp.Compile(filterRegex)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error compiling filter regex: %v\n", err)
 			os.Exit(1)
 		}
+		filter = r
 	}
 
 	baseDir, err := filepath.Abs(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	globs, err := compilePatterns(patterns)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error compiling glob patterns: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -196,57 +205,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Use the collected glob patterns or default
-	if len(globPatterns) == 0 {
-		// Default to all files in current directory
-		globPatterns = []string{"**"}
-	}
-
-	// Process each glob pattern
-	for _, pattern := range globPatterns {
-		// Handle absolute path patterns
-		searchDir := baseDir
-		if filepath.IsAbs(pattern) {
-			searchDir = filepath.Dir(pattern)
-			pattern = filepath.Base(pattern)
+	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-
-		matches, err := filepath.Glob(filepath.Join(searchDir, pattern))
+		relPath, err := filepath.Rel(baseDir, path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error processing glob pattern '%s': %v\n", pattern, err)
-			continue
+			return nil
 		}
 
-		// No matches for this pattern
-		if len(matches) == 0 {
-			continue
+		if gitIgnore.MatchesPath(relPath) {
+			return nil
 		}
-
-		// Process each match
-		for _, path := range matches {
-			info, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-
-			// If it's a directory, walk it
-			if info.IsDir() {
-				err = filepath.Walk(path, func(filePath string, fileInfo fs.FileInfo, err error) error {
-					if err != nil || fileInfo.IsDir() {
-						return nil
-					}
-
-					// Process this file
-					processFile(filePath, baseDir, gitIgnore, filter)
-					return nil
-				})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error walking directory '%s': %v\n", path, err)
-				}
-			} else {
-				// Process individual file
-				processFile(path, baseDir, gitIgnore, filter)
-			}
+		if !isTextFile(path) {
+			return nil
 		}
+		if len(globs) == 0 || matchesAny(relPath, globs) {
+			dumpFile(path, relPath, filter)
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error walking directory: %v\n", err)
+		os.Exit(1)
 	}
 }
