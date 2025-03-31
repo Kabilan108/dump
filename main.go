@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/gobwas/glob"
@@ -205,6 +206,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	var wg sync.WaitGroup
+	jobs := make(chan string, 100)
+
+	go func() {
+		for path := range jobs {
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				relPath, err := filepath.Rel(baseDir, p)
+				if err != nil {
+					return
+				}
+				_ = dumpFile(p, relPath, filter)
+			}(path)
+		}
+	}()
+
 	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -221,11 +239,13 @@ func main() {
 		}
 		if len(globs) == 0 || matchesAny(relPath, globs) {
 			if isTextFile(path) && !d.IsDir() {
-				dumpFile(path, relPath, filter)
+				jobs <- path
 			}
 		}
 		return nil
 	})
+	close(jobs)
+	wg.Wait()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error walking directory: %v\n", err)
 		os.Exit(1)
