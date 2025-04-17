@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"bytes"
 
 	"github.com/gobwas/glob"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -81,6 +82,28 @@ func TestIsTextFile(t *testing.T) {
 			t.Errorf("Expected isTextFile(%q) for non-existent file to be false, got true", path)
 		}
 	})
+}
+
+func TestWriteContents_PlainPercent(t *testing.T) {
+    var buf bytes.Buffer
+    want := "100% sure\n"
+    if err := writeContents(&buf, []string{want}); err != nil {
+        t.Fatalf("writeContents: %v", err)
+    }
+    if got := buf.String(); got != want {
+        t.Fatalf("got %q, want %q", got, want)
+    }
+}
+
+func TestWriteContents_FormatVerb(t *testing.T) {
+    var buf bytes.Buffer
+    want := "placeholder %s should stay literal\n"
+    if err := writeContents(&buf, []string{want}); err != nil {
+        t.Fatalf("writeContents: %v", err)
+    }
+    if got := buf.String(); got != want {
+        t.Fatalf("got %q, want %q", got, want)
+    }
 }
 
 func TestBuildIgnoreList(t *testing.T) {

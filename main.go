@@ -180,6 +180,16 @@ func dumpFile(contents *[]string, path, relPath string, filter *regexp.Regexp) e
 	return nil
 }
 
+func writeContents(w io.Writer, contents []string) error {
+	for _, c := range contents {
+		// treat snipppet as raw text NOT a format string (Fprintf)
+		if _, err := io.WriteString(w, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	patterns := parseNonFlagArgs()
 	flag.Parse()
@@ -258,11 +268,12 @@ func main() {
 	})
 	close(jobs)
 	wg.Wait()
-	for _, c := range contents {
-		fmt.Fprintf(os.Stdout, c)
-	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error walking directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := writeContents(os.Stdout, contents); err != nil {
+		fmt.Fprintf(os.Stderr, "write error: %v\n", err)
 		os.Exit(1)
 	}
 }
