@@ -1,9 +1,15 @@
 # Dump - Development Guide
 
-## Build & Run Commands
-- Build: `make build`
-- Install: `make install`
-- Clean: `rm -f dump`
+## Build Commands
+- `make build` - Build the dump binary to `build/dump`
+- `make run` - Build and run the application
+- `make install` - Install dump globally using `go install`
+- `make deps` - Update Go module dependencies with `go mod tidy`
+- `make clean` - Remove the build directory
+
+## Alternative Build / Lint / Test Commands
+- Build: `go build .` or `CGO_ENABLED=0 go build -ldflags="-s -w" -o dump .`
+- Cross-compile (static): `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dump .`
 - Run: `go run main.go`
 - Test: `go test ./...`
 - Test single file: `go test -v path/to/test_file.go`

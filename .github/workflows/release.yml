@@ -23,17 +23,29 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
       - name: Build Linux Binary
         run: |
-          BINARY_NAME="dump_linux_amd64"
-          go build -ldflags="-s -w" -o $BINARY_NAME .
+          BINARY_NAME="dump"
+          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" -o $BINARY_NAME .
         env:
           GOOS: linux
           GOARCH: amd64
+          CGO_ENABLED: 0
 
-      - name: Create Release and Upload Binary
+      - name: Create tarball
+        run: |
+          mkdir -p dump-linux-amd64/bin
+          cp dump dump-linux-amd64/bin/
+          tar czf dump-linux-amd64.tar.gz dump-linux-amd64
+
+      - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dump_linux_amd64
+          files: |
+            dump-linux-amd64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
