@@ -9,10 +9,10 @@
   in {
     packages.${system}.default = pkgs.stdenv.mkDerivation rec {
       pname = "dump";
-      version = "0.2.2";
+      version = "0.2.3";
       src = pkgs.fetchurl {
         url = "https://github.com/Kabilan108/dump/releases/download/v${version}/dump-linux-amd64.tar.gz";
-        sha256 = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        sha256 = "sha256-Be/ppauxtHGbiH8HpYm07iomTOqsH0mqMp8kxB/GVe8=";
       };
       installPhase = ''
         mkdir -p $out/bin
