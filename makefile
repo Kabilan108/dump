@@ -1,14 +1,14 @@
 
 build/dump: $(shell find . -name '*.go')
-	GO111MODULE=on CGO_ENABLED=0 go build -ldflags="-s -w" -o build/dump .
+	 CGO_ENABLED=0 go build -ldflags="-s -w" -o build/dump .
 
 build: build/dump
 
 install:
-	GO111MODULE=on go install
+	 go install
 
 deps:
-	GO111MODULE=on go mod tidy
+	 go mod tidy
 
 clean:
 	rm -f build/dump
