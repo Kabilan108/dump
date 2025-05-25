@@ -84,26 +84,86 @@ func TestIsTextFile(t *testing.T) {
 	})
 }
 
-func TestWriteContents_PlainPercent(t *testing.T) {
-    var buf bytes.Buffer
-    want := "100% sure\n"
-    if err := writeContents(&buf, []string{want}); err != nil {
-        t.Fatalf("writeContents: %v", err)
-    }
-    if got := buf.String(); got != want {
-        t.Fatalf("got %q, want %q", got, want)
-    }
+func TestFormatOutput(t *testing.T) {
+	testCases := []struct {
+		name   string
+		output fileOutput
+		format string
+		tag    string
+		expected string
+	}{
+		{
+			name: "XML format",
+			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			format: "xml",
+			tag:    "file",
+			expected: "<file path='src/main.go'>\npackage main\nfunc main() {}\n</file>\n",
+		},
+		{
+			name: "Markdown format",
+			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			format: "md",
+			tag:    "file", // Tag is ignored for md format
+			expected: "```src/main.go\npackage main\nfunc main() {}\n```\n",
+		},
+		{
+			name: "XML with custom tag",
+			output: fileOutput{path: "test.txt", content: "hello world\n"},
+			format: "xml",
+			tag:    "source",
+			expected: "<source path='test.txt'>\nhello world\n</source>\n",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := formatOutput(tc.output, tc.format, tc.tag)
+			if result != tc.expected {
+				t.Errorf("formatOutput() = %q, expected %q", result, tc.expected)
+			}
+		})
+	}
 }
 
-func TestWriteContents_FormatVerb(t *testing.T) {
-    var buf bytes.Buffer
-    want := "placeholder %s should stay literal\n"
-    if err := writeContents(&buf, []string{want}); err != nil {
-        t.Fatalf("writeContents: %v", err)
-    }
-    if got := buf.String(); got != want {
-        t.Fatalf("got %q, want %q", got, want)
-    }
+func TestWriteContents(t *testing.T) {
+	testCases := []struct {
+		name     string
+		contents []string
+		expected string
+	}{
+		{
+			name:     "Plain percent",
+			contents: []string{"100% sure\n"},
+			expected: "100% sure\n",
+		},
+		{
+			name:     "Format verb",
+			contents: []string{"placeholder %s should stay literal\n"},
+			expected: "placeholder %s should stay literal\n",
+		},
+		{
+			name:     "Multiple contents",
+			contents: []string{"first\n", "second\n", "third\n"},
+			expected: "first\nsecond\nthird\n",
+		},
+		{
+			name:     "Empty contents",
+			contents: []string{},
+			expected: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := writeContents(&buf, tc.contents); err != nil {
+				t.Fatalf("writeContents: %v", err)
+			}
+			if got := buf.String(); got != tc.expected {
+				t.Fatalf("got %q, want %q", got, tc.expected)
+			}
+		})
+	}
 }
 
 func TestBuildIgnoreList(t *testing.T) {
@@ -213,71 +273,50 @@ Line 5`
 	}
 
 	t.Run("No Filter", func(t *testing.T) {
-		// Create a slice to collect the output
-		var contents []string
-
-		err := dumpFile(&contents, absolutePath, relativePath, nil) // No filter
+		output, err := dumpFile(absolutePath, relativePath, nil) // No filter
 		if err != nil {
 			t.Errorf("dumpFile failed unexpectedly: %v", err)
+			return
 		}
 
-		// Check we got exactly one output string
-		if len(contents) != 1 {
-			t.Fatalf("Expected 1 output string, got %d", len(contents))
+		if output == nil {
+			t.Fatal("dumpFile returned nil output")
 		}
 
-		output := contents[0]
-		expectedStart := `<file path='relative/path/to/file.txt'>` + "\n"
-		expectedEnd := `</file>` + "\n" // Includes trailing newline
-
-		if !strings.HasPrefix(output, expectedStart) {
-			t.Errorf("Output missing expected start:\nExpected prefix: %q\nGot: %q", expectedStart, output)
-		}
-		if !strings.HasSuffix(output, expectedEnd) {
-			t.Errorf("Output missing expected end:\nExpected suffix: %q\nGot: %q", expectedEnd, output)
+		if output.path != relativePath {
+			t.Errorf("Expected path %q, got %q", relativePath, output.path)
 		}
 
-		// Extract and compare content between tags
-		contentInOutput := strings.TrimSuffix(strings.TrimPrefix(output, expectedStart), expectedEnd)
-		compareContent(t, contentInOutput, content)
+		// Compare content (remove trailing newline that dumpFile adds)
+		expectedContent := content + "\n"
+		compareContent(t, output.content, expectedContent)
 	})
 
 	t.Run("With Filter", func(t *testing.T) {
 		filterRegex := regexp.MustCompile(`secret`)
-		var contents []string
-
-		err := dumpFile(&contents, absolutePath, relativePath, filterRegex)
+		output, err := dumpFile(absolutePath, relativePath, filterRegex)
 		if err != nil {
 			t.Errorf("dumpFile with filter failed unexpectedly: %v", err)
+			return
 		}
 
-		// Check we got exactly one output string
-		if len(contents) != 1 {
-			t.Fatalf("Expected 1 output string, got %d", len(contents))
+		if output == nil {
+			t.Fatal("dumpFile returned nil output")
 		}
 
-		output := contents[0]
+		if output.path != relativePath {
+			t.Errorf("Expected path %q, got %q", relativePath, output.path)
+		}
+
 		expectedContent := `Line 1
 Line 3
-Line 5`
-		expectedStart := `<file path='relative/path/to/file.txt'>` + "\n"
-		expectedEnd := `</file>` + "\n"
-
-		if !strings.HasPrefix(output, expectedStart) {
-			t.Errorf("Filtered output missing expected start:\nExpected prefix: %q\nGot: %q", expectedStart, output)
-		}
-		if !strings.HasSuffix(output, expectedEnd) {
-			t.Errorf("Filtered output missing expected end:\nExpected suffix: %q\nGot: %q", expectedEnd, output)
-		}
-
-		// Extract and compare content between tags
-		contentInOutput := strings.TrimSuffix(strings.TrimPrefix(output, expectedStart), expectedEnd)
-		compareContent(t, contentInOutput, expectedContent)
+Line 5
+`
+		compareContent(t, output.content, expectedContent)
 	})
 
 	t.Run("Non-existent file", func(t *testing.T) {
-		var contents []string
-		err := dumpFile(&contents, filepath.Join(t.TempDir(), "non_existent"), "rel/path", nil)
+		_, err := dumpFile(filepath.Join(t.TempDir(), "non_existent"), "rel/path", nil)
 		if err == nil {
 			t.Error("Expected dumpFile to return an error for non-existent file, but got nil")
 		}
@@ -302,8 +341,7 @@ func processFile(path string, baseDir string, gitIgnore *ignore.GitIgnore, filte
 	}
 
 	// Dump file contents (without error checking for test simplicity)
-	var contents []string
-	_ = dumpFile(&contents, path, relPath, filter)
+	_, _ = dumpFile(path, relPath, filter)
 }
 
 func TestCompilePatterns(t *testing.T) {
@@ -495,5 +533,48 @@ func TestConcurrentProcessing(t *testing.T) {
 	if matchedFiles["data.txt"] {
 		t.Errorf("data.txt should not have been matched, but was")
 	}
+}
+
+func TestArrayFlags(t *testing.T) {
+	t.Run("String method", func(t *testing.T) {
+		af := arrayFlags{"*.go", "*.js", "test/**"}
+		expected := "*.go,*.js,test/**"
+		if af.String() != expected {
+			t.Errorf("String() = %q, expected %q", af.String(), expected)
+		}
+	})
+
+	t.Run("String method empty", func(t *testing.T) {
+		af := arrayFlags{}
+		expected := ""
+		if af.String() != expected {
+			t.Errorf("String() = %q, expected %q", af.String(), expected)
+		}
+	})
+
+	t.Run("Set method", func(t *testing.T) {
+		af := arrayFlags{}
+		
+		err := af.Set("*.go")
+		if err != nil {
+			t.Errorf("Set() returned unexpected error: %v", err)
+		}
+		
+		err = af.Set("*.js")
+		if err != nil {
+			t.Errorf("Set() returned unexpected error: %v", err)
+		}
+		
+		expected := arrayFlags{"*.go", "*.js"}
+		if len(af) != len(expected) {
+			t.Errorf("Set() length = %d, expected %d", len(af), len(expected))
+		}
+		
+		for i, v := range expected {
+			if af[i] != v {
+				t.Errorf("Set() af[%d] = %q, expected %q", i, af[i], v)
+			}
+		}
+	})
 }
 

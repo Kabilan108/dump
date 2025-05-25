@@ -7,17 +7,24 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
   in {
-    packages.${system}.default = pkgs.stdenv.mkDerivation rec {
+    packages.${system}.default = pkgs.buildGoModule rec {
       pname = "dump";
-      version = "0.2.3";
-      src = pkgs.fetchurl {
-        url = "https://github.com/Kabilan108/dump/releases/download/v${version}/dump-linux-amd64.tar.gz";
-        sha256 = "sha256-Be/ppauxtHGbiH8HpYm07iomTOqsH0mqMp8kxB/GVe8=";
-      };
+      version = "latest";
+      src = ./.;
+
+      vendorHash = "sha256-A8PH2ITmJE8SD9KVTN76OyXZrmc/oq9JH8Vm0HFZWPw=";
+
+      buildPhase = ''
+        runHook preBuild
+        go build -ldflags="-s -w" -o dump .
+        runHook postBuild
+      '';
+
       installPhase = ''
+        runHook preInstall
         mkdir -p $out/bin
-        cp bin/dump $out/bin/
-        chmod +x $out/bin/dump
+        cp dump $out/bin/
+        runHook postInstall
       '';
     };
     devShells.${system}.default = pkgs.mkShell {
@@ -25,6 +32,7 @@
         go
         gopls
         nodejs_20
+        self.packages.${system}.default
       ];
       shellHook = ''
         export NPM_CONFIG_PREFIX="$HOME/.npm-global"

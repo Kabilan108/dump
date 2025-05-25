@@ -20,11 +20,14 @@ import (
 )
 
 var (
-	dir          string
-	filterRegex  string
+	dirs         arrayFlags
+	patterns     arrayFlags
+	filterRgx    string
 	ignoreValues arrayFlags
+	outfmt       string
+	xmlTag       string
+	listOnly     bool
 	helpFlag     bool
-	outputMutex  sync.Mutex
 )
 
 // arrayFlags is a helper type for collecting multiple -i/--ignore patterns.
@@ -37,33 +40,6 @@ func (af *arrayFlags) String() string {
 func (af *arrayFlags) Set(value string) error {
 	*af = append(*af, value)
 	return nil
-}
-
-func init() {
-	flag.StringVar(&dir, "d", ".", "base directory to scan (default: current directory)")
-	flag.StringVar(&dir, "dir", ".", "base directory to scan (default: current directory)")
-	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
-	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
-	flag.StringVar(&filterRegex, "f", "", "skip lines matching this regex")
-	flag.StringVar(&filterRegex, "filter", "", "skip lines matching this regex")
-	flag.BoolVar(&helpFlag, "h", false, "display help message")
-	flag.BoolVar(&helpFlag, "help", false, "display help message")
-}
-
-func usage() {
-	fmt.Printf(`usage: dump [options] [patterns]
-
-description:
-  recursively dumps text files under the current directory (or --dir),
-  respecting .gitignore and custom ignore rules. positional patterns
-  are treated as path match filters (e.g., "*.kt", "**/Foo.kt").
-
-options:
-  -d, --dir <path>      base directory to scan (default: current directory)
-  -i, --ignore <pat>    glob pattern to ignore (can be repeated)
-  -f, --filter <regex>  skip lines matching this regex
-  -h, --help            display this help message
-`)
 }
 
 func isTextFile(path string) bool {
@@ -97,35 +73,6 @@ func buildIgnoreList(baseDir string, extraPatterns []string) (*ignore.GitIgnore,
 	return ignore.CompileIgnoreLines(extraPatterns...), nil
 }
 
-// flag parsing to handle flags appearing after positional arguments
-func parseNonFlagArgs() []string {
-	args := os.Args[1:]
-
-	var globPatterns []string
-	var remainingArgs []string
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
-			// This is a flag, skip it and its value if it takes one
-			remainingArgs = append(remainingArgs, arg)
-			// Check if this flag needs a value
-			if (arg == "-f" || arg == "--filter" || arg == "-i" || arg == "--ignore" || arg == "-d" || arg == "--dir") &&
-				i+1 < len(args) &&
-				!strings.HasPrefix(args[i+1], "-") {
-				remainingArgs = append(remainingArgs, args[i+1])
-				i++ // skip next value
-			}
-		} else {
-			globPatterns = append(globPatterns, arg)
-		}
-	}
-
-	tempArgs := append([]string{os.Args[0]}, remainingArgs...)
-	os.Args = tempArgs
-	return globPatterns
-}
-
 func compilePatterns(patterns []string) ([]glob.Glob, error) {
 	var globs []glob.Glob
 	for _, p := range patterns {
@@ -147,16 +94,28 @@ func matchesAny(path string, globs []glob.Glob) bool {
 	return false
 }
 
-func dumpFile(contents *[]string, path, relPath string, filter *regexp.Regexp) error {
+type fileOutput struct {
+	path    string
+	content string
+}
+
+func formatOutput(output fileOutput, format string, tag string) string {
+	switch format {
+	case "md":
+		return fmt.Sprintf("```%s\n%s```\n", output.path, output.content)
+	default:
+		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
+	}
+}
+
+func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("<file path='%s'>\n", relPath))
-
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -168,21 +127,71 @@ func dumpFile(contents *[]string, path, relPath string, filter *regexp.Regexp) e
 	}
 
 	if err := scanner.Err(); err != nil {
-		return errors.New("error reading file content")
+		return nil, errors.New("error reading file content")
 	}
 
-	buf.WriteString("</file>\n")
+	return &fileOutput{
+		path:    displayPath,
+		content: buf.String(),
+	}, nil
+}
 
-	outputMutex.Lock()
-	defer outputMutex.Unlock()
-	*contents = append(*contents, buf.String())
+func processDirectory(
+	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore,
+	filter *regexp.Regexp, wg *sync.WaitGroup, mu *sync.Mutex,
+	outputs *[]*fileOutput, pathList *[]string,
+) error {
+	defer wg.Done()
 
-	return nil
+	parentDir := filepath.Base(baseDir)
+	return filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return nil
+		}
+
+		if gitIgnore.MatchesPath(relPath) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() || !isTextFile(path) {
+			return nil
+		}
+
+		// check if file matches patterns
+		if len(globs) > 0 && !matchesAny(relPath, globs) {
+			return nil
+		}
+
+		displayPath := filepath.Join(parentDir, relPath)
+
+		if listOnly {
+			mu.Lock()
+			*pathList = append(*pathList, displayPath)
+			mu.Unlock()
+		} else {
+			output, err := dumpFile(path, displayPath, filter)
+			if err == nil {
+				mu.Lock()
+				*outputs = append(*outputs, output)
+				mu.Unlock()
+			}
+		}
+
+		return nil
+	})
 }
 
 func writeContents(w io.Writer, contents []string) error {
 	for _, c := range contents {
-		// treat snipppet as raw text NOT a format string (Fprintf)
+		// treat snippet as raw text NOT a format string (Fprintf)
 		if _, err := io.WriteString(w, c); err != nil {
 			return err
 		}
@@ -190,90 +199,121 @@ func writeContents(w io.Writer, contents []string) error {
 	return nil
 }
 
+func init() {
+	flag.Var(&dirs, "d", "directory to scan (can be repeated)")
+	flag.Var(&dirs, "dir", "directory to scan (can be repeated)")
+	flag.Var(&patterns, "g", "glob pattern to match (can be repeated)")
+	flag.Var(&patterns, "glob", "glob pattern to match (can be repeated)")
+	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
+	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
+	flag.StringVar(&filterRgx, "f", "", "skip lines matching this regex")
+	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
+	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
+	flag.StringVar(&outfmt, "out-fmt", "xml", "output format: xml or md")
+	flag.StringVar(&xmlTag, "xml-tag", "file", "custom XML tag name (only for xml output)")
+	flag.BoolVar(&listOnly, "l", false, "list file paths only")
+	flag.BoolVar(&listOnly, "list", false, "list file paths only")
+	flag.BoolVar(&helpFlag, "h", false, "display help message")
+	flag.BoolVar(&helpFlag, "help", false, "display help message")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, `usage: dump [options] [directories...]
+
+  recursively dumps text files from specified directories,
+  respecting .gitignore and custom ignore rules.
+
+options:
+  -d|--dir <value>       directory to scan (can be repeated)
+  -g|--glob <value>      glob pattern to match (can be repeated)
+  -f|--filter <string>   skip lines matching this regex
+  -h|--help              display help message
+  -i|--ignore <value>    glob pattern to ignore (can be repeated)
+  -o|--out-fmt <string>  xml or md (default "xml")
+  -l|--list              list file paths only
+  --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
+`)
+	}
+}
+
 func main() {
-	patterns := parseNonFlagArgs()
 	flag.Parse()
 
+	args := flag.Args()
+	if len(args) > 0 {
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") {
+				fmt.Fprintf(os.Stderr, "unexpected flag after directories\n\n")
+				flag.Usage()
+				os.Exit(1)
+			}
+		}
+	}
+
 	if helpFlag {
-		usage()
+		flag.Usage()
 		os.Exit(0)
 	}
 
+	if outfmt != "xml" && outfmt != "md" {
+		fmt.Fprintf(os.Stderr, "invalid output format %q (must be xml or md)\n", outfmt)
+		os.Exit(1)
+	}
+
+	// collect dirs
+	allDirs := append([]string{}, dirs...)
+	allDirs = append(allDirs, flag.Args()...)
+
+	if len(allDirs) == 0 {
+		allDirs = []string{"."}
+	}
+
 	filter := (*regexp.Regexp)(nil)
-	if filterRegex != "" {
-		r, err := regexp.Compile(filterRegex)
+	if filterRgx != "" {
+		r, err := regexp.Compile(filterRgx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error compiling filter regex: %v\n", err)
+			fmt.Fprintf(os.Stderr, "failed to compile regex filter: %v\n", err)
 			os.Exit(1)
 		}
 		filter = r
 	}
 
-	baseDir, err := filepath.Abs(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve directory: %v\n", err)
-		os.Exit(1)
-	}
-
 	globs, err := compilePatterns(patterns)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error compiling glob patterns: %v\n", err)
-		os.Exit(1)
-	}
-
-	gitIgnore, err := buildIgnoreList(baseDir, ignoreValues)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error building ignore list: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to compile glob patterns: %v\n", err)
 		os.Exit(1)
 	}
 
 	var wg sync.WaitGroup
-	jobs := make(chan string, 100)
-	contents := []string{}
+	var mu sync.Mutex
+	var outputs []*fileOutput
+	var pathList []string
 
-	go func() {
-		for path := range jobs {
-			wg.Add(1)
-			go func(p string) {
-				defer wg.Done()
-				relPath, err := filepath.Rel(baseDir, p)
-				if err != nil {
-					return
-				}
-				_ = dumpFile(&contents, p, relPath, filter)
-			}(path)
+	for _, dir := range allDirs {
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to resolve directory %q: %v\n", dir, err)
+			continue
 		}
-	}()
 
-	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		gitIgnore, err := buildIgnoreList(absDir, ignoreValues)
 		if err != nil {
-			return nil
+			fmt.Fprintf(os.Stderr, "failed to build ignore list for %q: %v\n", dir, err)
+			continue
 		}
-		relPath, err := filepath.Rel(baseDir, path)
-		if err != nil {
-			return nil
-		}
-		if gitIgnore.MatchesPath(relPath) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if len(globs) == 0 || matchesAny(relPath, globs) {
-			if isTextFile(path) && !d.IsDir() {
-				jobs <- path
-			}
-		}
-		return nil
-	})
-	close(jobs)
-	wg.Wait()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error walking directory: %v\n", err)
-		os.Exit(1)
+
+		wg.Add(1)
+		go processDirectory(absDir, globs, gitIgnore, filter, &wg, &mu, &outputs, &pathList)
 	}
-	if err := writeContents(os.Stdout, contents); err != nil {
-		fmt.Fprintf(os.Stderr, "write error: %v\n", err)
-		os.Exit(1)
+
+	wg.Wait()
+
+	if listOnly {
+		for _, path := range pathList {
+			fmt.Println(path)
+		}
+	} else {
+		for _, output := range outputs {
+			fmt.Print(formatOutput(*output, outfmt, xmlTag))
+		}
 	}
 }

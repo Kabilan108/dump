@@ -41,14 +41,33 @@ cd dump
 make build
 ```
 
+### Option 3: Using Nix Flake
+
+```bash
+# Install directly
+nix profile install github:kabilan108/dump
+
+# Or run without installing
+nix run github:kabilan108/dump
+
+# For development
+nix develop
+```
+
 ## Usage
 
 ```bash
 # Dump all text files from current directory
 dump
 
+# Dump from specific directories
+dump src/ tests/ docs/
+
+# Dump with directory flags
+dump -d src/ -d tests/
+
 # Include specific files using glob patterns
-dump "*.go" "*.md"
+dump -g "*.go" -g "*.md"
 
 # Add ignore patterns (can use multiple times)
 dump -i "*.log" -i "node_modules"
@@ -56,14 +75,38 @@ dump -i "*.log" -i "node_modules"
 # Filter out lines matching a regex pattern
 dump -f "TODO|FIXME"
 
+# List file paths only (no content)
+dump -l
+
+# Markdown output format instead of XML
+dump -o md
+
+# Custom XML tag name
+dump --xml-tag source
+
 # Combine options
-dump "*.go" -i "vendor" -f "^//.*"
+dump src/ tests/ -g "*.go" -i "vendor" -f "^//.*"
 
 # Get help
 dump -h
 ```
 
+### Flag Reference
+
+| Flag | Long Flag | Description |
+|------|-----------|-------------|
+| `-d` | `--dir` | Directory to scan (can be repeated) |
+| `-g` | `--glob` | Glob pattern to match (can be repeated) |
+| `-f` | `--filter` | Skip lines matching this regex |
+| `-h` | `--help` | Display help message |
+| `-i` | `--ignore` | Glob pattern to ignore (can be repeated) |
+| `-o` | `--out-fmt` | Output format: xml or md (default "xml") |
+| `-l` | `--list` | List file paths only |
+| | `--xml-tag` | Custom XML tag name (only for xml output) |
+
 ## Output Format
+
+### XML Format (Default)
 
 Files are output in this format:
 ```xml
@@ -72,6 +115,16 @@ content of the file goes here
 multiple lines are preserved
 </file>
 ```
+
+### Markdown Format
+
+When using `-o md`, files are output as code blocks:
+````markdown
+```relative/path/to/file
+content of the file goes here
+multiple lines are preserved
+```
+````
 
 ## License
 
