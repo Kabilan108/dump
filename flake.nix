@@ -16,14 +16,14 @@
 
       buildPhase = ''
         runHook preBuild
-        go build -ldflags="-s -w" -o dump .
+        make build
         runHook postBuild
       '';
 
       installPhase = ''
         runHook preInstall
         mkdir -p $out/bin
-        cp dump $out/bin/
+        cp build/dump $out/bin/
         runHook postInstall
       '';
     };
