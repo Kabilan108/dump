@@ -306,6 +306,8 @@ func init() {
   respecting .gitignore and custom ignore rules.
   can also fetch content from URLs via Exa API.
 
+  if no content sources are specified (directories or URLs), defaults to current directory.
+
 options:
   -d|--dir <value>       directory to scan (can be repeated)
   -g|--glob <value>      glob pattern to match (can be repeated)
@@ -323,6 +325,11 @@ options:
 
 environment variables:
   EXA_API_KEY            required for URL fetching via Exa API
+
+examples:
+  dump                   dumps current directory (default behavior)
+  dump -u https://...    dumps only specified URL
+  dump -d src -u https://...  dumps src directory and URL
 `)
 	}
 }
@@ -355,7 +362,7 @@ func main() {
 	allDirs := append([]string{}, dirs...)
 	allDirs = append(allDirs, flag.Args()...)
 
-	if len(allDirs) == 0 {
+	if len(allDirs) == 0 && len(urls) == 0 {
 		allDirs = []string{"."}
 	}
 
