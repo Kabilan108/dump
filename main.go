@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -273,6 +274,10 @@ func fetchURLsConcurrently(urls []string, apiKey string, liveCrawl bool, timeout
 }
 
 func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
+	if _, err := url.ParseRequestURI(targetURL); err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
 	reqBody := ExaRequest{
 		URLs:      []string{targetURL},
 		Text:      true,
