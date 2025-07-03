@@ -27,6 +27,7 @@ var (
 	outfmt       string
 	xmlTag       string
 	listOnly     bool
+	treeFlag     bool
 	helpFlag     bool
 )
 
@@ -97,6 +98,13 @@ func matchesAny(path string, globs []glob.Glob) bool {
 type fileOutput struct {
 	path    string
 	content string
+}
+
+type treeNode struct {
+	name     string
+	path     string
+	isDir    bool
+	children []*treeNode
 }
 
 func formatOutput(output fileOutput, format string, tag string) string {
@@ -199,6 +207,128 @@ func writeContents(w io.Writer, contents []string) error {
 	return nil
 }
 
+func buildTree(baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore) (*treeNode, error) {
+	root := &treeNode{
+		name:     filepath.Base(baseDir),
+		path:     baseDir,
+		isDir:    true,
+		children: []*treeNode{},
+	}
+
+	nodeMap := make(map[string]*treeNode)
+	nodeMap[baseDir] = root
+
+	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return nil
+		}
+
+		if gitIgnore.MatchesPath(relPath) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if path == baseDir {
+			return nil
+		}
+
+		if d.IsDir() {
+			node := &treeNode{
+				name:     d.Name(),
+				path:     path,
+				isDir:    true,
+				children: []*treeNode{},
+			}
+			nodeMap[path] = node
+			return nil
+		}
+
+		if !isTextFile(path) {
+			return nil
+		}
+
+		if len(globs) > 0 && !matchesAny(relPath, globs) {
+			return nil
+		}
+
+		node := &treeNode{
+			name:  d.Name(),
+			path:  path,
+			isDir: false,
+		}
+
+		parentPath := filepath.Dir(path)
+		if parentNode, exists := nodeMap[parentPath]; exists {
+			parentNode.children = append(parentNode.children, node)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Add directories to their parents and remove empty directories
+	for path, node := range nodeMap {
+		if path == baseDir {
+			continue
+		}
+		parentPath := filepath.Dir(path)
+		if parentNode, exists := nodeMap[parentPath]; exists {
+			if node.isDir && len(node.children) > 0 {
+				parentNode.children = append(parentNode.children, node)
+			}
+		}
+	}
+
+	return root, nil
+}
+
+func formatTreeNode(node *treeNode, prefix string, isLast bool) string {
+	var result strings.Builder
+
+	if node.name != "." {
+		if isLast {
+			result.WriteString(prefix + "└── " + node.name + "\n")
+		} else {
+			result.WriteString(prefix + "├── " + node.name + "\n")
+		}
+	}
+
+	for i, child := range node.children {
+		childIsLast := i == len(node.children)-1
+		var childPrefix string
+		if node.name == "." {
+			childPrefix = prefix
+		} else if isLast {
+			childPrefix = prefix + "    "
+		} else {
+			childPrefix = prefix + "│   "
+		}
+		result.WriteString(formatTreeNode(child, childPrefix, childIsLast))
+	}
+
+	return result.String()
+}
+
+func formatTreeOutput(tree *treeNode, format string) string {
+	treeStr := formatTreeNode(tree, "", true)
+	switch format {
+	case "md":
+		return fmt.Sprintf("```tree\n%s```\n\n", treeStr)
+	default:
+		return fmt.Sprintf("<tree>\n%s</tree>\n\n", treeStr)
+	}
+}
+
 func init() {
 	flag.Var(&dirs, "d", "directory to scan (can be repeated)")
 	flag.Var(&dirs, "dir", "directory to scan (can be repeated)")
@@ -213,6 +343,8 @@ func init() {
 	flag.StringVar(&xmlTag, "xml-tag", "file", "custom XML tag name (only for xml output)")
 	flag.BoolVar(&listOnly, "l", false, "list file paths only")
 	flag.BoolVar(&listOnly, "list", false, "list file paths only")
+	flag.BoolVar(&treeFlag, "t", false, "show directory tree")
+	flag.BoolVar(&treeFlag, "tree", false, "show directory tree")
 	flag.BoolVar(&helpFlag, "h", false, "display help message")
 	flag.BoolVar(&helpFlag, "help", false, "display help message")
 
@@ -230,6 +362,7 @@ options:
   -i|--ignore <value>    glob pattern to ignore (can be repeated)
   -o|--out-fmt <string>  xml or md (default "xml")
   -l|--list              list file paths only
+  -t|--tree              show directory tree
   --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
 `)
 	}
@@ -307,11 +440,35 @@ func main() {
 
 	wg.Wait()
 
+	if treeFlag {
+		for _, dir := range allDirs {
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				continue
+			}
+
+			gitIgnore, err := buildIgnoreList(absDir, ignoreValues)
+			if err != nil {
+				continue
+			}
+
+			tree, err := buildTree(absDir, globs, gitIgnore)
+			if err == nil {
+				fmt.Print(formatTreeOutput(tree, outfmt))
+			}
+		}
+	}
+
 	if listOnly {
 		for _, path := range pathList {
 			fmt.Println(path)
 		}
+	} else if !treeFlag {
+		for _, output := range outputs {
+			fmt.Print(formatOutput(*output, outfmt, xmlTag))
+		}
 	} else {
+		// Show both tree and file contents
 		for _, output := range outputs {
 			fmt.Print(formatOutput(*output, outfmt, xmlTag))
 		}
