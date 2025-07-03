@@ -87,28 +87,28 @@ func TestIsTextFile(t *testing.T) {
 func TestFormatOutput(t *testing.T) {
 	testCases := []struct {
 		name   string
-		output fileOutput
+		output Dumped
 		format string
 		tag    string
 		expected string
 	}{
 		{
 			name: "XML format",
-			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			output: Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format: "xml",
 			tag:    "file",
 			expected: "<file path='src/main.go'>\npackage main\nfunc main() {}\n</file>\n",
 		},
 		{
 			name: "Markdown format",
-			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			output: Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format: "md",
 			tag:    "file", // Tag is ignored for md format
 			expected: "```src/main.go\npackage main\nfunc main() {}\n```\n",
 		},
 		{
 			name: "XML with custom tag",
-			output: fileOutput{path: "test.txt", content: "hello world\n"},
+			output: Dumped{path: "test.txt", content: "hello world\n"},
 			format: "xml",
 			tag:    "source",
 			expected: "<source path='test.txt'>\nhello world\n</source>\n",

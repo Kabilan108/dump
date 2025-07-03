@@ -28,11 +28,15 @@ var (
 	filterRgx    string
 	ignoreValues arrayFlags
 	urls         arrayFlags
+	liveCrawl    bool
+	timeoutSec   int
 	outfmt       string
 	xmlTag       string
 	listOnly     bool
 	helpFlag     bool
 )
+
+const exaBaseURL = "https://api.exa.ai/contents"
 
 // arrayFlags is a helper type for collecting multiple -i/--ignore patterns.
 type arrayFlags []string
@@ -98,15 +102,15 @@ func matchesAny(path string, globs []glob.Glob) bool {
 	return false
 }
 
-type fileOutput struct {
+type Dumped struct {
 	path    string
 	content string
 }
 
-// Exa API structures
 type ExaRequest struct {
 	URLs      []string `json:"urls"`
 	Text      bool     `json:"text"`
+	Context   bool     `json:"context"`
 	Livecrawl string   `json:"livecrawl"`
 }
 
@@ -121,19 +125,19 @@ type ExaResponse struct {
 	Context string      `json:"context"`
 }
 
-func formatOutput(output fileOutput, format string, tag string) string {
+func formatOutput(output Dumped, format string, tag string) string {
 	switch format {
 	case "md":
 		return fmt.Sprintf("```%s\n%s```\n", output.path, output.content)
 	default:
 		if strings.HasPrefix(output.path, "http://") || strings.HasPrefix(output.path, "https://") {
-			return fmt.Sprintf("<%s url='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
+			return fmt.Sprintf("<web url='%s'>\n%s</web>\n", output.path, output.content)
 		}
 		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
 	}
 }
 
-func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, error) {
+func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Dumped, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -155,7 +159,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 		return nil, errors.New("error reading file content")
 	}
 
-	return &fileOutput{
+	return &Dumped{
 		path:    displayPath,
 		content: buf.String(),
 	}, nil
@@ -164,7 +168,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 func processDirectory(
 	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore,
 	filter *regexp.Regexp, wg *sync.WaitGroup, mu *sync.Mutex,
-	outputs *[]*fileOutput, pathList *[]string,
+	outputs *[]*Dumped, pathList *[]string,
 ) error {
 	defer wg.Done()
 
@@ -214,15 +218,15 @@ func processDirectory(
 	})
 }
 
-func fetchURLContent(targetURL string, apiKey string) (*fileOutput, error) {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
+func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
 	reqBody := ExaRequest{
 		URLs:      []string{targetURL},
 		Text:      true,
-		Livecrawl: "always",
+		Context:   true,
+		Livecrawl: "fallback",
+	}
+	if liveCrawl {
+		reqBody.Livecrawl = "always"
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -230,7 +234,7 @@ func fetchURLContent(targetURL string, apiKey string) (*fileOutput, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://api.exa.ai/contents", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", exaBaseURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -238,6 +242,7 @@ func fetchURLContent(targetURL string, apiKey string) (*fileOutput, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
 
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
@@ -253,11 +258,11 @@ func fetchURLContent(targetURL string, apiKey string) (*fileOutput, error) {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if exaResp.Context == "" {
+	if len(strings.TrimSpace(exaResp.Context)) == 0 {
 		return nil, fmt.Errorf("no context field in response")
 	}
 
-	return &fileOutput{
+	return &Dumped{
 		path:    targetURL,
 		content: exaResp.Context,
 	}, nil
@@ -282,6 +287,8 @@ func init() {
 	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
 	flag.Var(&urls, "u", "URL to fetch content from via Exa API (can be repeated)")
 	flag.Var(&urls, "url", "URL to fetch content from via Exa API (can be repeated)")
+	flag.BoolVar(&liveCrawl, "live", false, "fetch the most recent content from the URL")
+	flag.IntVar(&timeoutSec, "timeout", 15, "timeout for fetching URL content")
 	flag.StringVar(&filterRgx, "f", "", "skip lines matching this regex")
 	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
 	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
@@ -308,7 +315,11 @@ options:
   -o|--out-fmt <string>  xml or md (default "xml")
   -l|--list              list file paths only
   -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
+
   --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
+  --live                 fetch the most recent content from URL (sets 'livecrawl'='always', default='fallback')
+                         see https://docs.exa.ai/reference/get-contents for more details
+  --timeout <int>        timeout for fetching URL content (default=15)
 
 environment variables:
   EXA_API_KEY            required for URL fetching via Exa API
@@ -366,7 +377,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var outputs []*fileOutput
+	var outputs []*Dumped
 	var pathList []string
 
 	for _, dir := range allDirs {
@@ -395,7 +406,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: EXA_API_KEY environment variable is required for URL fetching\n")
 		} else {
 			for _, url := range urls {
-				urlOutput, err := fetchURLContent(url, apiKey)
+				urlOutput, err := fetchURLContent(url, apiKey, liveCrawl, timeoutSec)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error fetching URL %s: %v\n", url, err)
 					continue
