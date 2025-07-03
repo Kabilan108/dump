@@ -440,7 +440,7 @@ func main() {
 
 	wg.Wait()
 
-	if treeFlag {
+	if treeFlag && !listOnly {
 		for _, dir := range allDirs {
 			absDir, err := filepath.Abs(dir)
 			if err != nil {
