@@ -3,16 +3,19 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gobwas/glob"
@@ -24,6 +27,7 @@ var (
 	patterns     arrayFlags
 	filterRgx    string
 	ignoreValues arrayFlags
+	urls         arrayFlags
 	outfmt       string
 	xmlTag       string
 	listOnly     bool
@@ -99,11 +103,32 @@ type fileOutput struct {
 	content string
 }
 
+// Exa API structures
+type ExaRequest struct {
+	URLs      []string `json:"urls"`
+	Text      bool     `json:"text"`
+	Livecrawl string   `json:"livecrawl"`
+}
+
+type ExaResult struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+type ExaResponse struct {
+	Results []ExaResult `json:"results"`
+	Context string      `json:"context"`
+}
+
 func formatOutput(output fileOutput, format string, tag string) string {
 	switch format {
 	case "md":
 		return fmt.Sprintf("```%s\n%s```\n", output.path, output.content)
 	default:
+		if strings.HasPrefix(output.path, "http://") || strings.HasPrefix(output.path, "https://") {
+			return fmt.Sprintf("<%s url='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
+		}
 		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
 	}
 }
@@ -189,6 +214,55 @@ func processDirectory(
 	})
 }
 
+func fetchURLContent(targetURL string, apiKey string) (*fileOutput, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	reqBody := ExaRequest{
+		URLs:      []string{targetURL},
+		Text:      true,
+		Livecrawl: "always",
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.exa.ai/contents", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status: %s", resp.Status)
+	}
+
+	var exaResp ExaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&exaResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if exaResp.Context == "" {
+		return nil, fmt.Errorf("no context field in response")
+	}
+
+	return &fileOutput{
+		path:    targetURL,
+		content: exaResp.Context,
+	}, nil
+}
+
 func writeContents(w io.Writer, contents []string) error {
 	for _, c := range contents {
 		// treat snippet as raw text NOT a format string (Fprintf)
@@ -206,6 +280,8 @@ func init() {
 	flag.Var(&patterns, "glob", "glob pattern to match (can be repeated)")
 	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
 	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
+	flag.Var(&urls, "u", "URL to fetch content from via Exa API (can be repeated)")
+	flag.Var(&urls, "url", "URL to fetch content from via Exa API (can be repeated)")
 	flag.StringVar(&filterRgx, "f", "", "skip lines matching this regex")
 	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
 	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
@@ -221,6 +297,7 @@ func init() {
 
   recursively dumps text files from specified directories,
   respecting .gitignore and custom ignore rules.
+  can also fetch content from URLs via Exa API.
 
 options:
   -d|--dir <value>       directory to scan (can be repeated)
@@ -230,7 +307,11 @@ options:
   -i|--ignore <value>    glob pattern to ignore (can be repeated)
   -o|--out-fmt <string>  xml or md (default "xml")
   -l|--list              list file paths only
+  -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
   --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
+
+environment variables:
+  EXA_API_KEY            required for URL fetching via Exa API
 `)
 	}
 }
@@ -306,6 +387,23 @@ func main() {
 	}
 
 	wg.Wait()
+
+	// Process URLs after local files (if any URLs provided)
+	if len(urls) > 0 && !listOnly {
+		apiKey := os.Getenv("EXA_API_KEY")
+		if apiKey == "" {
+			fmt.Fprintf(os.Stderr, "error: EXA_API_KEY environment variable is required for URL fetching\n")
+		} else {
+			for _, url := range urls {
+				urlOutput, err := fetchURLContent(url, apiKey)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error fetching URL %s: %v\n", url, err)
+					continue
+				}
+				outputs = append(outputs, urlOutput)
+			}
+		}
+	}
 
 	if listOnly {
 		for _, path := range pathList {
