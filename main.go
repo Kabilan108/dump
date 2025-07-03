@@ -218,6 +218,60 @@ func processDirectory(
 	})
 }
 
+func fetchURLsConcurrently(urls []string, apiKey string, liveCrawl bool, timeoutSec int) []*Dumped {
+	if len(urls) == 0 {
+		return nil
+	}
+
+	const maxConcurrency = 3
+	const rateLimitDelay = 350 * time.Millisecond // ~3 requests per second (350ms * 3 = ~1050ms)
+
+	urlsChan := make(chan string, len(urls))
+	resultsChan := make(chan *Dumped, len(urls))
+
+	// Send URLs to channel
+	for _, url := range urls {
+		urlsChan <- url
+	}
+	close(urlsChan)
+
+	var wg sync.WaitGroup
+
+	// start worker goroutines
+	for i := range maxConcurrency {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for url := range urlsChan {
+				// rate limiting: stagger requests
+				time.Sleep(time.Duration(workerID) * rateLimitDelay / maxConcurrency)
+
+				result, err := fetchURLContent(url, apiKey, liveCrawl, timeoutSec)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error fetching URL %s: %v\n", url, err)
+					continue
+				}
+				resultsChan <- result
+
+				// Add delay between requests from same worker
+				time.Sleep(rateLimitDelay)
+			}
+		}(i)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsChan) // close results channel when all workers done
+	}()
+
+	var results []*Dumped
+	for result := range resultsChan {
+		results = append(results, result)
+	}
+
+	return results
+}
+
 func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
 	reqBody := ExaRequest{
 		URLs:      []string{targetURL},
@@ -406,20 +460,14 @@ func main() {
 
 	wg.Wait()
 
-	// Process URLs after local files (if any URLs provided)
+	// process urls concurrently after local files (if any urls provided)
 	if len(urls) > 0 && !listOnly {
 		apiKey := os.Getenv("EXA_API_KEY")
 		if apiKey == "" {
 			fmt.Fprintf(os.Stderr, "error: EXA_API_KEY environment variable is required for URL fetching\n")
 		} else {
-			for _, url := range urls {
-				urlOutput, err := fetchURLContent(url, apiKey, liveCrawl, timeoutSec)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "error fetching URL %s: %v\n", url, err)
-					continue
-				}
-				outputs = append(outputs, urlOutput)
-			}
+			webOutputs := fetchURLsConcurrently(urls, apiKey, liveCrawl, timeoutSec)
+			outputs = append(outputs, webOutputs...)
 		}
 	}
 
