@@ -147,76 +147,17 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 func processDirectory(
 	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore,
 	filter *regexp.Regexp, wg *sync.WaitGroup, mu *sync.Mutex,
-	outputs *[]*fileOutput, pathList *[]string,
+	outputs *[]*fileOutput, pathList *[]string, treeRoot *treeNode,
 ) error {
 	defer wg.Done()
 
 	parentDir := filepath.Base(baseDir)
-	return filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
 
-		relPath, err := filepath.Rel(baseDir, path)
-		if err != nil {
-			return nil
-		}
-
-		if gitIgnore.MatchesPath(relPath) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if d.IsDir() || !isTextFile(path) {
-			return nil
-		}
-
-		// check if file matches patterns
-		if len(globs) > 0 && !matchesAny(relPath, globs) {
-			return nil
-		}
-
-		displayPath := filepath.Join(parentDir, relPath)
-
-		if listOnly {
-			mu.Lock()
-			*pathList = append(*pathList, displayPath)
-			mu.Unlock()
-		} else {
-			output, err := dumpFile(path, displayPath, filter)
-			if err == nil {
-				mu.Lock()
-				*outputs = append(*outputs, output)
-				mu.Unlock()
-			}
-		}
-
-		return nil
-	})
-}
-
-func writeContents(w io.Writer, contents []string) error {
-	for _, c := range contents {
-		// treat snippet as raw text NOT a format string (Fprintf)
-		if _, err := io.WriteString(w, c); err != nil {
-			return err
-		}
+	var nodeMap map[string]*treeNode
+	if treeRoot != nil {
+		nodeMap = make(map[string]*treeNode)
+		nodeMap[baseDir] = treeRoot
 	}
-	return nil
-}
-
-func buildTree(baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore) (*treeNode, error) {
-	root := &treeNode{
-		name:     filepath.Base(baseDir),
-		path:     baseDir,
-		isDir:    true,
-		children: []*treeNode{},
-	}
-
-	nodeMap := make(map[string]*treeNode)
-	nodeMap[baseDir] = root
 
 	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -235,18 +176,17 @@ func buildTree(baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore) (
 			return nil
 		}
 
-		if path == baseDir {
-			return nil
-		}
-
+		// handle directory nodes for tree (if tree building is enabled)
 		if d.IsDir() {
-			node := &treeNode{
-				name:     d.Name(),
-				path:     path,
-				isDir:    true,
-				children: []*treeNode{},
+			if treeRoot != nil && path != baseDir {
+				node := &treeNode{
+					name:     d.Name(),
+					path:     path,
+					isDir:    true,
+					children: []*treeNode{},
+				}
+				nodeMap[path] = node
 			}
-			nodeMap[path] = node
 			return nil
 		}
 
@@ -254,42 +194,72 @@ func buildTree(baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore) (
 			return nil
 		}
 
+		// check if file matches patterns
 		if len(globs) > 0 && !matchesAny(relPath, globs) {
 			return nil
 		}
 
-		node := &treeNode{
-			name:  d.Name(),
-			path:  path,
-			isDir: false,
+		displayPath := filepath.Join(parentDir, relPath)
+
+		// add file node to tree (if tree building is enabled)
+		if treeRoot != nil {
+			fileNode := &treeNode{
+				name:  d.Name(),
+				path:  path,
+				isDir: false,
+			}
+
+			parentPath := filepath.Dir(path)
+			if parentNode, exists := nodeMap[parentPath]; exists {
+				parentNode.children = append(parentNode.children, fileNode)
+			}
 		}
 
-		parentPath := filepath.Dir(path)
-		if parentNode, exists := nodeMap[parentPath]; exists {
-			parentNode.children = append(parentNode.children, node)
+		if listOnly {
+			mu.Lock()
+			*pathList = append(*pathList, displayPath)
+			mu.Unlock()
+		} else {
+			output, err := dumpFile(path, displayPath, filter)
+			if err == nil {
+				mu.Lock()
+				*outputs = append(*outputs, output)
+				mu.Unlock()
+			}
 		}
 
 		return nil
 	})
-
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	// Add directories to their parents and remove empty directories
-	for path, node := range nodeMap {
-		if path == baseDir {
-			continue
-		}
-		parentPath := filepath.Dir(path)
-		if parentNode, exists := nodeMap[parentPath]; exists {
-			if node.isDir && len(node.children) > 0 {
-				parentNode.children = append(parentNode.children, node)
+	if treeRoot != nil {
+		// add directory nodes to their parents
+		for path, node := range nodeMap {
+			if path == baseDir {
+				continue
+			}
+			parentPath := filepath.Dir(path)
+			if parentNode, exists := nodeMap[parentPath]; exists {
+				if node.isDir {
+					parentNode.children = append(parentNode.children, node)
+				}
 			}
 		}
 	}
 
-	return root, nil
+	return nil
+}
+
+func writeContents(w io.Writer, contents []string) error {
+	for _, c := range contents {
+		// treat snippet as raw text NOT a format string (Fprintf)
+		if _, err := io.WriteString(w, c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func formatTreeNode(node *treeNode, prefix string, isLast bool) string {
@@ -416,11 +386,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var outputs []*fileOutput
-	var pathList []string
-
+	// Process directories sequentially for interleaved output
 	for _, dir := range allDirs {
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
@@ -434,43 +400,42 @@ func main() {
 			continue
 		}
 
+		// Directory-specific outputs
+		var dirOutputs []*fileOutput
+		var dirPathList []string
+		var dirTree *treeNode
+
+		// Initialize tree root if tree flag is enabled
+		if treeFlag {
+			dirTree = &treeNode{
+				name:     filepath.Base(absDir),
+				path:     absDir,
+				isDir:    true,
+				children: []*treeNode{},
+			}
+		}
+
+		// Process this directory
+		var wg sync.WaitGroup
+		var mu sync.Mutex
 		wg.Add(1)
-		go processDirectory(absDir, globs, gitIgnore, filter, &wg, &mu, &outputs, &pathList)
-	}
+		go processDirectory(absDir, globs, gitIgnore, filter, &wg, &mu, &dirOutputs, &dirPathList, dirTree)
+		wg.Wait()
 
-	wg.Wait()
-
-	if treeFlag && !listOnly {
-		for _, dir := range allDirs {
-			absDir, err := filepath.Abs(dir)
-			if err != nil {
-				continue
-			}
-
-			gitIgnore, err := buildIgnoreList(absDir, ignoreValues)
-			if err != nil {
-				continue
-			}
-
-			tree, err := buildTree(absDir, globs, gitIgnore)
-			if err == nil {
-				fmt.Print(formatTreeOutput(tree, outfmt))
-			}
+		// Output tree for this directory (if enabled)
+		if treeFlag && dirTree != nil {
+			fmt.Print(formatTreeOutput(dirTree, outfmt))
 		}
-	}
 
-	if listOnly {
-		for _, path := range pathList {
-			fmt.Println(path)
-		}
-	} else if !treeFlag {
-		for _, output := range outputs {
-			fmt.Print(formatOutput(*output, outfmt, xmlTag))
-		}
-	} else {
-		// Show both tree and file contents
-		for _, output := range outputs {
-			fmt.Print(formatOutput(*output, outfmt, xmlTag))
+		// Output files for this directory
+		if listOnly {
+			for _, path := range dirPathList {
+				fmt.Println(path)
+			}
+		} else {
+			for _, output := range dirOutputs {
+				fmt.Print(formatOutput(*output, outfmt, xmlTag))
+			}
 		}
 	}
 }
