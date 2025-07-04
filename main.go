@@ -421,7 +421,12 @@ func main() {
 				}
 			}
 
-			processDirectory(absDir, globs, gitIgnore, filter, &dirOutputs, &dirPathList, dirTree)
+			err = processDirectory(absDir, globs, gitIgnore, filter, &dirOutputs, &dirPathList, dirTree)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to process directory %q: %v\n", dir, err)
+				return
+			}
+
 			results <- directoryResult{
 				tree:     dirTree,
 				outputs:  dirOutputs,
