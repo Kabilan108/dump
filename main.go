@@ -3,16 +3,20 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gobwas/glob"
@@ -24,12 +28,17 @@ var (
 	patterns     arrayFlags
 	filterRgx    string
 	ignoreValues arrayFlags
+	urls         arrayFlags
+	liveCrawl    bool
+	timeoutSec   int
 	outfmt       string
 	xmlTag       string
 	listOnly     bool
 	treeFlag     bool
 	helpFlag     bool
 )
+
+const exaBaseURL = "https://api.exa.ai/contents"
 
 // arrayFlags is a helper type for collecting multiple -i/--ignore patterns.
 type arrayFlags []string
@@ -95,7 +104,7 @@ func matchesAny(path string, globs []glob.Glob) bool {
 	return false
 }
 
-type fileOutput struct {
+type Dumped struct {
 	path    string
 	content string
 }
@@ -109,21 +118,42 @@ type treeNode struct {
 
 type directoryResult struct {
 	tree     *treeNode
-	outputs  []*fileOutput
+	outputs  []*Dumped
 	pathList []string
 	dirName  string
 }
 
-func formatOutput(output fileOutput, format string, tag string) string {
+type ExaRequest struct {
+	URLs      []string `json:"urls"`
+	Text      bool     `json:"text"`
+	Context   bool     `json:"context"`
+	Livecrawl string   `json:"livecrawl"`
+}
+
+type ExaResult struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+type ExaResponse struct {
+	Results []ExaResult `json:"results"`
+	Context string      `json:"context"`
+}
+
+func formatOutput(output Dumped, format string, tag string) string {
 	switch format {
 	case "md":
 		return fmt.Sprintf("```%s\n%s```\n", output.path, output.content)
 	default:
+		if strings.HasPrefix(output.path, "http://") || strings.HasPrefix(output.path, "https://") {
+			return fmt.Sprintf("<web url='%s'>\n%s</web>\n", output.path, output.content)
+		}
 		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
 	}
 }
 
-func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, error) {
+func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Dumped, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -145,7 +175,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 		return nil, errors.New("error reading file content")
 	}
 
-	return &fileOutput{
+	return &Dumped{
 		path:    displayPath,
 		content: buf.String(),
 	}, nil
@@ -153,7 +183,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 
 func processDirectory(
 	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
-	outputs *[]*fileOutput, pathList *[]string, treeRoot *treeNode,
+	outputs *[]*Dumped, pathList *[]string, treeRoot *treeNode,
 ) error {
 	parentDir := filepath.Base(baseDir)
 
@@ -252,6 +282,106 @@ func processDirectory(
 	return nil
 }
 
+func fetchURLsConcurrently(
+	urls []string, apiKey string, liveCrawl bool, timeoutSec int,
+	wg *sync.WaitGroup, results chan *Dumped,
+) {
+	if len(urls) == 0 {
+		return
+	}
+
+	const maxConcurrency = 3
+	const rateLimitDelay = 350 * time.Millisecond // ~3 requests per second (350ms * 3 = ~1050ms)
+
+	urlsChan := make(chan string, len(urls))
+
+	// Send URLs to channel
+	for _, url := range urls {
+		urlsChan <- url
+	}
+	close(urlsChan)
+
+	// start worker goroutines
+	for i := range maxConcurrency {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for url := range urlsChan {
+				// rate limiting: stagger requests
+				time.Sleep(time.Duration(workerID) * rateLimitDelay / maxConcurrency)
+
+				result, err := fetchURLContent(url, apiKey, liveCrawl, timeoutSec)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error fetching URL %s: %v\n", url, err)
+					continue
+				}
+				results <- result
+
+				// Add delay between requests from same worker
+				time.Sleep(rateLimitDelay)
+			}
+		}(i)
+	}
+}
+
+func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
+	u, err := url.ParseRequestURI(targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("URL must use HTTP or HTTPS scheme")
+	}
+
+	reqBody := ExaRequest{
+		URLs:      []string{targetURL},
+		Text:      true,
+		Context:   true,
+		Livecrawl: "fallback",
+	}
+	if liveCrawl {
+		reqBody.Livecrawl = "always"
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", exaBaseURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status: %s", resp.Status)
+	}
+
+	var exaResp ExaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&exaResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(strings.TrimSpace(exaResp.Context)) == 0 {
+		return nil, fmt.Errorf("no context field in response")
+	}
+
+	return &Dumped{
+		path:    targetURL,
+		content: exaResp.Context,
+	}, nil
+}
+
 func writeContents(w io.Writer, contents []string) error {
 	for _, c := range contents {
 		// treat snippet as raw text NOT a format string (Fprintf)
@@ -306,6 +436,10 @@ func init() {
 	flag.Var(&patterns, "glob", "glob pattern to match (can be repeated)")
 	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
 	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
+	flag.Var(&urls, "u", "URL to fetch content from via Exa API (can be repeated)")
+	flag.Var(&urls, "url", "URL to fetch content from via Exa API (can be repeated)")
+	flag.BoolVar(&liveCrawl, "live", false, "fetch the most recent content from the URL")
+	flag.IntVar(&timeoutSec, "timeout", 15, "timeout for fetching URL content")
 	flag.StringVar(&filterRgx, "f", "", "skip lines matching this regex")
 	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
 	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
@@ -323,6 +457,9 @@ func init() {
 
   recursively dumps text files from specified directories,
   respecting .gitignore and custom ignore rules.
+  can also fetch content from URLs via Exa API.
+
+  if no content sources are specified (directories or URLs), defaults to current directory.
 
 options:
   -d|--dir <value>       directory to scan (can be repeated)
@@ -333,7 +470,20 @@ options:
   -o|--out-fmt <string>  xml or md (default "xml")
   -l|--list              list file paths only
   -t|--tree              show directory tree
+  -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
+
   --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
+  --timeout <int>        timeout for fetching URL content (default=15)
+  --live                 fetch the most recent content from URL (sets 'livecrawl'='always', default='fallback')
+                         see https://docs.exa.ai/reference/get-contents for more details
+
+environment variables:
+  EXA_API_KEY            required for URL fetching via Exa API
+
+examples:
+  dump                   dumps current directory (default behavior)
+  dump -u https://...    dumps only specified URL
+  dump -d src -u https://...  dumps src directory and URL
 `)
 	}
 }
@@ -362,11 +512,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// process urls concurrently
+	urlResults := make(chan *Dumped, len(urls))
+	urlWg := sync.WaitGroup{}
+	if len(urls) > 0 && !listOnly {
+		apiKey := os.Getenv("EXA_API_KEY")
+		if apiKey == "" {
+			fmt.Fprintf(os.Stderr, "EXA_API_KEY environment variable is required for URL fetching\n")
+			os.Exit(1)
+		}
+		fetchURLsConcurrently(urls, apiKey, liveCrawl, timeoutSec, &urlWg, urlResults)
+	}
+	go func() {
+		// close channel when all urls are processed
+		urlWg.Wait()
+		close(urlResults)
+	}()
+
 	// collect dirs
 	allDirs := append([]string{}, dirs...)
 	allDirs = append(allDirs, flag.Args()...)
 
-	if len(allDirs) == 0 {
+	if len(allDirs) == 0 && len(urls) == 0 {
 		allDirs = []string{"."}
 	}
 
@@ -387,13 +554,13 @@ func main() {
 	}
 
 	// process directories concurrently
-	results := make(chan directoryResult, len(allDirs))
-	var wg sync.WaitGroup
+	fileResults := make(chan directoryResult, len(allDirs))
+	var fileWg sync.WaitGroup
 
 	for _, dir := range allDirs {
-		wg.Add(1)
+		fileWg.Add(1)
 		go func(dir string) {
-			defer wg.Done()
+			defer fileWg.Done()
 
 			absDir, err := filepath.Abs(dir)
 			if err != nil {
@@ -408,7 +575,7 @@ func main() {
 			}
 
 			// directory-specific outputs
-			var dirOutputs []*fileOutput
+			var dirOutputs []*Dumped
 			var dirPathList []string
 			var dirTree *treeNode
 
@@ -427,7 +594,7 @@ func main() {
 				return
 			}
 
-			results <- directoryResult{
+			fileResults <- directoryResult{
 				tree:     dirTree,
 				outputs:  dirOutputs,
 				pathList: dirPathList,
@@ -436,26 +603,28 @@ func main() {
 		}(dir)
 	}
 
-	// close channel when all directories are processed
 	go func() {
-		wg.Wait()
-		close(results)
+		// close channel when all directories are processed
+		fileWg.Wait()
+		close(fileResults)
 	}()
 
-	// Output results as they complete
-	for result := range results {
-		if treeFlag && !listOnly && result.tree != nil {
-			fmt.Print(formatTreeOutput(result.tree, outfmt))
-		}
-
+	// output results as they complete
+	for result := range fileResults {
 		if listOnly {
 			for _, path := range result.pathList {
 				fmt.Println(path)
 			}
 		} else {
+			if treeFlag && result.tree != nil {
+				fmt.Print(formatTreeOutput(result.tree, outfmt))
+			}
 			for _, output := range result.outputs {
 				fmt.Print(formatOutput(*output, outfmt, xmlTag))
 			}
 		}
+	}
+	for result := range urlResults {
+		fmt.Print(formatOutput(*result, outfmt, xmlTag))
 	}
 }

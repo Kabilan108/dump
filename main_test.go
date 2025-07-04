@@ -2,13 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
-	"bytes"
 
 	"github.com/gobwas/glob"
 	ignore "github.com/sabhiram/go-gitignore"
@@ -86,32 +86,46 @@ func TestIsTextFile(t *testing.T) {
 
 func TestFormatOutput(t *testing.T) {
 	testCases := []struct {
-		name   string
-		output fileOutput
-		format string
-		tag    string
+		name     string
+		output   Dumped
+		format   string
+		tag      string
 		expected string
 	}{
 		{
-			name: "XML format",
-			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
-			format: "xml",
-			tag:    "file",
+			name:     "XML format",
+			output:   Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			format:   "xml",
+			tag:      "file",
 			expected: "<file path='src/main.go'>\npackage main\nfunc main() {}\n</file>\n",
 		},
 		{
-			name: "Markdown format",
-			output: fileOutput{path: "src/main.go", content: "package main\nfunc main() {}\n"},
-			format: "md",
-			tag:    "file", // Tag is ignored for md format
+			name:     "Markdown format",
+			output:   Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			format:   "md",
+			tag:      "file", // Tag is ignored for md format
 			expected: "```src/main.go\npackage main\nfunc main() {}\n```\n",
 		},
 		{
-			name: "XML with custom tag",
-			output: fileOutput{path: "test.txt", content: "hello world\n"},
-			format: "xml",
-			tag:    "source",
+			name:     "XML with custom tag",
+			output:   Dumped{path: "test.txt", content: "hello world\n"},
+			format:   "xml",
+			tag:      "source",
 			expected: "<source path='test.txt'>\nhello world\n</source>\n",
+		},
+		{
+			name:     "URL with XML format",
+			output:   Dumped{path: "https://example.com", content: "web content\n"},
+			format:   "xml",
+			tag:      "file",
+			expected: "<web url='https://example.com'>\nweb content\n</web>\n",
+		},
+		{
+			name:     "URL with Markdown format",
+			output:   Dumped{path: "https://example.com", content: "web content\n"},
+			format:   "md",
+			tag:      "file",
+			expected: "```https://example.com\nweb content\n```\n",
 		},
 	}
 
@@ -554,22 +568,22 @@ func TestArrayFlags(t *testing.T) {
 
 	t.Run("Set method", func(t *testing.T) {
 		af := arrayFlags{}
-		
+
 		err := af.Set("*.go")
 		if err != nil {
 			t.Errorf("Set() returned unexpected error: %v", err)
 		}
-		
+
 		err = af.Set("*.js")
 		if err != nil {
 			t.Errorf("Set() returned unexpected error: %v", err)
 		}
-		
+
 		expected := arrayFlags{"*.go", "*.js"}
 		if len(af) != len(expected) {
 			t.Errorf("Set() length = %d, expected %d", len(af), len(expected))
 		}
-		
+
 		for i, v := range expected {
 			if af[i] != v {
 				t.Errorf("Set() af[%d] = %q, expected %q", i, af[i], v)
@@ -577,4 +591,3 @@ func TestArrayFlags(t *testing.T) {
 		}
 	})
 }
-
