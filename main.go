@@ -107,6 +107,13 @@ type treeNode struct {
 	children []*treeNode
 }
 
+type directoryResult struct {
+	tree     *treeNode
+	outputs  []*fileOutput
+	pathList []string
+	dirName  string
+}
+
 func formatOutput(output fileOutput, format string, tag string) string {
 	switch format {
 	case "md":
@@ -145,12 +152,9 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*fileOutput, err
 }
 
 func processDirectory(
-	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore,
-	filter *regexp.Regexp, wg *sync.WaitGroup, mu *sync.Mutex,
+	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
 	outputs *[]*fileOutput, pathList *[]string, treeRoot *treeNode,
 ) error {
-	defer wg.Done()
-
 	parentDir := filepath.Base(baseDir)
 
 	var nodeMap map[string]*treeNode
@@ -216,15 +220,11 @@ func processDirectory(
 		}
 
 		if listOnly {
-			mu.Lock()
 			*pathList = append(*pathList, displayPath)
-			mu.Unlock()
 		} else {
 			output, err := dumpFile(path, displayPath, filter)
 			if err == nil {
-				mu.Lock()
 				*outputs = append(*outputs, output)
-				mu.Unlock()
 			}
 		}
 
@@ -295,7 +295,7 @@ func formatTreeOutput(tree *treeNode, format string) string {
 	case "md":
 		return fmt.Sprintf("```tree\n%s```\n\n", treeStr)
 	default:
-		return fmt.Sprintf("<tree>\n%s</tree>\n\n", treeStr)
+		return fmt.Sprintf("<tree path='%s'>\n%s</tree>\n", tree.path, treeStr)
 	}
 }
 
@@ -386,54 +386,69 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Process directories sequentially for interleaved output
+	// process directories concurrently
+	results := make(chan directoryResult, len(allDirs))
+	var wg sync.WaitGroup
+
 	for _, dir := range allDirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to resolve directory %q: %v\n", dir, err)
-			continue
-		}
-
-		gitIgnore, err := buildIgnoreList(absDir, ignoreValues)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to build ignore list for %q: %v\n", dir, err)
-			continue
-		}
-
-		// Directory-specific outputs
-		var dirOutputs []*fileOutput
-		var dirPathList []string
-		var dirTree *treeNode
-
-		// Initialize tree root if tree flag is enabled
-		if treeFlag {
-			dirTree = &treeNode{
-				name:     filepath.Base(absDir),
-				path:     absDir,
-				isDir:    true,
-				children: []*treeNode{},
-			}
-		}
-
-		// Process this directory
-		var wg sync.WaitGroup
-		var mu sync.Mutex
 		wg.Add(1)
-		go processDirectory(absDir, globs, gitIgnore, filter, &wg, &mu, &dirOutputs, &dirPathList, dirTree)
-		wg.Wait()
+		go func(dir string) {
+			defer wg.Done()
 
-		// Output tree for this directory (if enabled)
-		if treeFlag && dirTree != nil {
-			fmt.Print(formatTreeOutput(dirTree, outfmt))
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to resolve directory %q: %v\n", dir, err)
+				return
+			}
+
+			gitIgnore, err := buildIgnoreList(absDir, ignoreValues)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to build ignore list for %q: %v\n", dir, err)
+				return
+			}
+
+			// directory-specific outputs
+			var dirOutputs []*fileOutput
+			var dirPathList []string
+			var dirTree *treeNode
+
+			if treeFlag {
+				dirTree = &treeNode{
+					name:     filepath.Base(absDir),
+					path:     absDir,
+					isDir:    true,
+					children: []*treeNode{},
+				}
+			}
+
+			processDirectory(absDir, globs, gitIgnore, filter, &dirOutputs, &dirPathList, dirTree)
+			results <- directoryResult{
+				tree:     dirTree,
+				outputs:  dirOutputs,
+				pathList: dirPathList,
+				dirName:  dir,
+			}
+		}(dir)
+	}
+
+	// close channel when all directories are processed
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Output results as they complete
+	for result := range results {
+		if treeFlag && !listOnly && result.tree != nil {
+			fmt.Print(formatTreeOutput(result.tree, outfmt))
 		}
 
-		// Output files for this directory
 		if listOnly {
-			for _, path := range dirPathList {
+			for _, path := range result.pathList {
 				fmt.Println(path)
 			}
 		} else {
-			for _, output := range dirOutputs {
+			for _, output := range result.outputs {
 				fmt.Print(formatOutput(*output, outfmt, xmlTag))
 			}
 		}
