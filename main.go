@@ -491,17 +491,6 @@ examples:
 func main() {
 	flag.Parse()
 
-	args := flag.Args()
-	if len(args) > 0 {
-		for _, a := range args {
-			if strings.HasPrefix(a, "-") {
-				fmt.Fprintf(os.Stderr, "unexpected flag after directories\n\n")
-				flag.Usage()
-				os.Exit(1)
-			}
-		}
-	}
-
 	if helpFlag {
 		flag.Usage()
 		os.Exit(0)
@@ -529,10 +518,7 @@ func main() {
 		close(urlResults)
 	}()
 
-	// collect dirs
 	allDirs := append([]string{}, dirs...)
-	allDirs = append(allDirs, flag.Args()...)
-
 	if len(allDirs) == 0 && len(urls) == 0 {
 		allDirs = []string{"."}
 	}
