@@ -87,42 +87,42 @@ func TestIsTextFile(t *testing.T) {
 func TestFormatOutput(t *testing.T) {
 	testCases := []struct {
 		name     string
-		output   Dumped
+		output   Item
 		format   string
 		tag      string
 		expected string
 	}{
 		{
 			name:     "XML format",
-			output:   Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			output:   Item{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format:   "xml",
 			tag:      "file",
 			expected: "<file path='src/main.go'>\npackage main\nfunc main() {}\n</file>\n",
 		},
 		{
 			name:     "Markdown format",
-			output:   Dumped{path: "src/main.go", content: "package main\nfunc main() {}\n"},
+			output:   Item{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format:   "md",
 			tag:      "file", // Tag is ignored for md format
 			expected: "```src/main.go\npackage main\nfunc main() {}\n```\n",
 		},
 		{
 			name:     "XML with custom tag",
-			output:   Dumped{path: "test.txt", content: "hello world\n"},
+			output:   Item{path: "test.txt", content: "hello world\n"},
 			format:   "xml",
 			tag:      "source",
 			expected: "<source path='test.txt'>\nhello world\n</source>\n",
 		},
 		{
 			name:     "URL with XML format",
-			output:   Dumped{path: "https://example.com", content: "web content\n"},
+			output:   Item{path: "https://example.com", content: "web content\n"},
 			format:   "xml",
 			tag:      "file",
 			expected: "<web url='https://example.com'>\nweb content\n</web>\n",
 		},
 		{
 			name:     "URL with Markdown format",
-			output:   Dumped{path: "https://example.com", content: "web content\n"},
+			output:   Item{path: "https://example.com", content: "web content\n"},
 			format:   "md",
 			tag:      "file",
 			expected: "```https://example.com\nweb content\n```\n",
@@ -131,7 +131,7 @@ func TestFormatOutput(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := formatOutput(tc.output, tc.format, tc.tag)
+			result := formatItem(tc.output, tc.format, tc.tag)
 			if result != tc.expected {
 				t.Errorf("formatOutput() = %q, expected %q", result, tc.expected)
 			}

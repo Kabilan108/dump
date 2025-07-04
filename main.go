@@ -104,21 +104,21 @@ func matchesAny(path string, globs []glob.Glob) bool {
 	return false
 }
 
-type Dumped struct {
+type Item struct {
 	path    string
 	content string
 }
 
-type treeNode struct {
+type TreeNode struct {
 	name     string
 	path     string
 	isDir    bool
-	children []*treeNode
+	children []*TreeNode
 }
 
-type directoryResult struct {
-	tree     *treeNode
-	outputs  []*Dumped
+type DirectoryOutput struct {
+	tree     *TreeNode
+	items    []*Item
 	pathList []string
 	dirName  string
 }
@@ -141,19 +141,19 @@ type ExaResponse struct {
 	Context string      `json:"context"`
 }
 
-func formatOutput(output Dumped, format string, tag string) string {
+func formatItem(item Item, format string, tag string) string {
 	switch format {
 	case "md":
-		return fmt.Sprintf("```%s\n%s```\n", output.path, output.content)
+		return fmt.Sprintf("```%s\n%s```\n", item.path, item.content)
 	default:
-		if strings.HasPrefix(output.path, "http://") || strings.HasPrefix(output.path, "https://") {
-			return fmt.Sprintf("<web url='%s'>\n%s</web>\n", output.path, output.content)
+		if strings.HasPrefix(item.path, "http://") || strings.HasPrefix(item.path, "https://") {
+			return fmt.Sprintf("<web url='%s'>\n%s</web>\n", item.path, item.content)
 		}
-		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, output.path, output.content, tag)
+		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, item.path, item.content, tag)
 	}
 }
 
-func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Dumped, error) {
+func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -175,7 +175,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Dumped, error) 
 		return nil, errors.New("error reading file content")
 	}
 
-	return &Dumped{
+	return &Item{
 		path:    displayPath,
 		content: buf.String(),
 	}, nil
@@ -183,13 +183,13 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Dumped, error) 
 
 func processDirectory(
 	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
-	outputs *[]*Dumped, pathList *[]string, treeRoot *treeNode,
+	items *[]*Item, pathList *[]string, treeRoot *TreeNode,
 ) error {
 	parentDir := filepath.Base(baseDir)
 
-	var nodeMap map[string]*treeNode
+	var nodeMap map[string]*TreeNode
 	if treeRoot != nil {
-		nodeMap = make(map[string]*treeNode)
+		nodeMap = make(map[string]*TreeNode)
 		nodeMap[baseDir] = treeRoot
 	}
 
@@ -213,11 +213,11 @@ func processDirectory(
 		// handle directory nodes for tree (if tree building is enabled)
 		if d.IsDir() {
 			if treeRoot != nil && path != baseDir {
-				node := &treeNode{
+				node := &TreeNode{
 					name:     d.Name(),
 					path:     path,
 					isDir:    true,
-					children: []*treeNode{},
+					children: []*TreeNode{},
 				}
 				nodeMap[path] = node
 			}
@@ -237,7 +237,7 @@ func processDirectory(
 
 		// add file node to tree (if tree building is enabled)
 		if treeRoot != nil {
-			fileNode := &treeNode{
+			fileNode := &TreeNode{
 				name:  d.Name(),
 				path:  path,
 				isDir: false,
@@ -254,7 +254,7 @@ func processDirectory(
 		} else {
 			output, err := dumpFile(path, displayPath, filter)
 			if err == nil {
-				*outputs = append(*outputs, output)
+				*items = append(*items, output)
 			}
 		}
 
@@ -284,7 +284,7 @@ func processDirectory(
 
 func fetchURLsConcurrently(
 	urls []string, apiKey string, liveCrawl bool, timeoutSec int,
-	wg *sync.WaitGroup, results chan *Dumped,
+	wg *sync.WaitGroup, results chan *Item,
 ) {
 	if len(urls) == 0 {
 		return
@@ -324,7 +324,7 @@ func fetchURLsConcurrently(
 	}
 }
 
-func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
+func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Item, error) {
 	u, err := url.ParseRequestURI(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
@@ -376,7 +376,7 @@ func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec
 		return nil, fmt.Errorf("no context field in response")
 	}
 
-	return &Dumped{
+	return &Item{
 		path:    targetURL,
 		content: exaResp.Context,
 	}, nil
@@ -392,7 +392,7 @@ func writeContents(w io.Writer, contents []string) error {
 	return nil
 }
 
-func formatTreeNode(node *treeNode, prefix string, isLast bool) string {
+func formatTreeNode(node *TreeNode, prefix string, isLast bool) string {
 	var result strings.Builder
 
 	if node.name != "." {
@@ -419,7 +419,7 @@ func formatTreeNode(node *treeNode, prefix string, isLast bool) string {
 	return result.String()
 }
 
-func formatTreeOutput(tree *treeNode, format string) string {
+func formatTreeOutput(tree *TreeNode, format string) string {
 	treeStr := formatTreeNode(tree, "", true)
 	switch format {
 	case "md":
@@ -502,7 +502,7 @@ func main() {
 	}
 
 	// process urls concurrently
-	urlResults := make(chan *Dumped, len(urls))
+	urlItems := make(chan *Item, len(urls))
 	urlWg := sync.WaitGroup{}
 	if len(urls) > 0 && !listOnly {
 		apiKey := os.Getenv("EXA_API_KEY")
@@ -510,12 +510,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "EXA_API_KEY environment variable is required for URL fetching\n")
 			os.Exit(1)
 		}
-		fetchURLsConcurrently(urls, apiKey, liveCrawl, timeoutSec, &urlWg, urlResults)
+		fetchURLsConcurrently(urls, apiKey, liveCrawl, timeoutSec, &urlWg, urlItems)
 	}
 	go func() {
 		// close channel when all urls are processed
 		urlWg.Wait()
-		close(urlResults)
+		close(urlItems)
 	}()
 
 	allDirs := append([]string{}, dirs...)
@@ -540,7 +540,7 @@ func main() {
 	}
 
 	// process directories concurrently
-	fileResults := make(chan directoryResult, len(allDirs))
+	dirOutputs := make(chan DirectoryOutput, len(allDirs))
 	var fileWg sync.WaitGroup
 
 	for _, dir := range allDirs {
@@ -561,29 +561,29 @@ func main() {
 			}
 
 			// directory-specific outputs
-			var dirOutputs []*Dumped
-			var dirPathList []string
-			var dirTree *treeNode
+			var items []*Item
+			var paths []string
+			var dirTree *TreeNode
 
 			if treeFlag {
-				dirTree = &treeNode{
+				dirTree = &TreeNode{
 					name:     filepath.Base(absDir),
 					path:     absDir,
 					isDir:    true,
-					children: []*treeNode{},
+					children: []*TreeNode{},
 				}
 			}
 
-			err = processDirectory(absDir, globs, gitIgnore, filter, &dirOutputs, &dirPathList, dirTree)
+			err = processDirectory(absDir, globs, gitIgnore, filter, &items, &paths, dirTree)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to process directory %q: %v\n", dir, err)
 				return
 			}
 
-			fileResults <- directoryResult{
+			dirOutputs <- DirectoryOutput{
 				tree:     dirTree,
-				outputs:  dirOutputs,
-				pathList: dirPathList,
+				items:    items,
+				pathList: paths,
 				dirName:  dir,
 			}
 		}(dir)
@@ -592,25 +592,24 @@ func main() {
 	go func() {
 		// close channel when all directories are processed
 		fileWg.Wait()
-		close(fileResults)
+		close(dirOutputs)
 	}()
 
-	// output results as they complete
-	for result := range fileResults {
+	for do := range dirOutputs {
 		if listOnly {
-			for _, path := range result.pathList {
+			for _, path := range do.pathList {
 				fmt.Println(path)
 			}
 		} else {
-			if treeFlag && result.tree != nil {
-				fmt.Print(formatTreeOutput(result.tree, outfmt))
+			if treeFlag && do.tree != nil {
+				fmt.Print(formatTreeOutput(do.tree, outfmt))
 			}
-			for _, output := range result.outputs {
-				fmt.Print(formatOutput(*output, outfmt, xmlTag))
+			for _, item := range do.items {
+				fmt.Print(formatItem(*item, outfmt, xmlTag))
 			}
 		}
 	}
-	for result := range urlResults {
-		fmt.Print(formatOutput(*result, outfmt, xmlTag))
+	for result := range urlItems {
+		fmt.Print(formatItem(*result, outfmt, xmlTag))
 	}
 }
