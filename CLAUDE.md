@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a CLI tool called `dump` that recursively walks through directories and outputs text files in a structured format (XML or Markdown) for easy consumption by LLMs. The tool respects `.gitignore` files, provides flexible filtering options, and can also fetch content from URLs via the Exa API.
+This is a CLI tool called `dump` that recursively walks through directories and outputs text files in a structured format (XML or Markdown) for easy consumption by LLMs. The tool respects `.gitignore` files, provides flexible filtering options, supports directory tree visualization, and can also fetch content from URLs via the Exa API.
 
 ## Build and Development Commands
 
@@ -59,12 +59,20 @@ The codebase is a single-file Go application (`main.go`) with comprehensive test
 - `dumpFile()`: Reads file content and applies line-level filtering via regex
 - `fetchURLContent()`: Fetches web content from URLs using Exa API with proper error handling
 - `formatOutput()`: Formats file or URL content as XML or Markdown with appropriate attributes
+- `printTree()`: Recursively prints directory tree structure with proper indentation
+- `listFiles()`: Lists file paths without content when list mode is enabled
 
 ### Concurrency Model
 The tool uses goroutines with `sync.WaitGroup` for concurrent directory processing. Each directory is processed in its own goroutine with mutex-protected shared state for collecting results. URL fetching is done sequentially after local file processing to respect API rate limits.
 
 ### CLI Interface
-Uses Go's `flag` package with custom `arrayFlags` type to support repeated arguments. Supports both short (`-i`, `-u`) and long (`--ignore`, `--url`) flag formats. URL functionality requires the `EXA_API_KEY` environment variable.
+Uses Go's `flag` package with custom `arrayFlags` type to support repeated arguments. Supports both short (`-i`, `-u`, `-t`, `-l`) and long (`--ignore`, `--url`, `--tree`, `--list`) flag formats. Features include:
+- Directory tree visualization (`-t/--tree`)
+- List-only mode (`-l/--list`) for file paths without content
+- Custom XML tag names (`--xml-tag`)
+- Configurable timeout for URL fetching (`--timeout`)
+- Live crawl option for fresh URL content (`--live`)
+- URL functionality requires the `EXA_API_KEY` environment variable
 
 ## Dependencies
 
@@ -95,12 +103,19 @@ dump -u https://example.com/documentation
 
 # Mix with other options
 dump -g "*.go" -u https://golang.org/doc/ -o md
+
+# List files in directory without content
+dump -l -d src/
+
+# Custom timeout and live crawl
+dump -u https://example.com --timeout 30 --live
 ```
 
 ### Requirements
 - `EXA_API_KEY` environment variable must be set
 - URLs are processed after all local file processing completes
-- API calls have a 30-second timeout
+- API calls have a configurable timeout (default 15 seconds)
+- Live crawl option forces fresh content retrieval
 
 ### Output Format
 - **XML**: `<file url='https://example.com'>content</file>`
@@ -114,5 +129,6 @@ dump -g "*.go" -u https://golang.org/doc/ -o md
 ### API Integration
 Uses Exa's `/contents` endpoint with:
 - `text: true` for text extraction
-- `livecrawl: "always"` for fresh content
+- `livecrawl: "fallback"` by default, or `"always"` when `--live` flag is used
 - Returns the `context` field containing combined text content
+- Configurable timeout via `--timeout` flag (default 15 seconds)

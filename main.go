@@ -463,27 +463,31 @@ func init() {
 
 options:
   -d|--dir <value>       directory to scan (can be repeated)
-  -g|--glob <value>      glob pattern to match (can be repeated)
+  -g|--glob <value>      glob pattern to match files (can be repeated)
   -f|--filter <string>   skip lines matching this regex
   -h|--help              display help message
-  -i|--ignore <value>    glob pattern to ignore (can be repeated)
-  -o|--out-fmt <string>  xml or md (default "xml")
-  -l|--list              list file paths only
-  -t|--tree              show directory tree
+  -i|--ignore <value>    glob pattern to ignore files/dirs (can be repeated)
+  -l|--list              list file paths only (no content)
+  -o|--out-fmt <string>  output format: xml or md (default "xml")
+  -t|--tree              show directory tree structure
   -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
 
-  --xml-tag <string>     custom XML tag name (only for xml output) (default "file")
-  --timeout <int>        timeout for fetching URL content (default=15)
-  --live                 fetch the most recent content from URL (sets 'livecrawl'='always', default='fallback')
-                         see https://docs.exa.ai/reference/get-contents for more details
+  --xml-tag <string>     custom XML tag name for files (only for xml output) (default "file")
+  --timeout <int>        timeout in seconds for URL fetching (default 15)
+  --live                 force fresh content from URLs (livecrawl=always vs fallback)
 
 environment variables:
   EXA_API_KEY            required for URL fetching via Exa API
 
 examples:
-  dump                   dumps current directory (default behavior)
-  dump -u https://...    dumps only specified URL
-  dump -d src -u https://...  dumps src directory and URL
+  dump                          dumps current directory
+  dump -d src -d docs           dumps src and docs directories
+  dump -g "**.go" -g "**.md"    dumps only Go and Markdown files
+  dump -l                       list file paths in the current directory
+  dump -t                       dumps current directory and shows tree structure
+  dump -u https://example.com   fetches and dumps URL content
+  dump -d src -u https://...    dumps src directory and URL content
+  dump -o md -f "^\s*#"         markdown format, skip comment lines
 `)
 	}
 }
