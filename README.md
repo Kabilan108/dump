@@ -1,6 +1,7 @@
 # dump 📄
 
 [![Run Go Tests](https://github.com/Kabilan108/dump/actions/workflows/test.yml/badge.svg)](https://github.com/Kabilan108/dump/actions/workflows/test.yml)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Kabilan108/dump)
 
 <img src="./assets/dump.png" width="250" height="250" alt="dumpy">
 
