@@ -21,6 +21,6 @@ run: build
 	./build/dump
 
 release: build/dump-linux-amd64
-	cp build/dump-linux-amd64 dump
+	cp build/dump-linux-amd64 build/dump
 	tar czf dump-linux-amd64.tar.gz -C build dump
-	rm -rf dump
+	rm -rf build/*
