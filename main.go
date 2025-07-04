@@ -274,8 +274,12 @@ func fetchURLsConcurrently(urls []string, apiKey string, liveCrawl bool, timeout
 }
 
 func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Dumped, error) {
-	if _, err := url.ParseRequestURI(targetURL); err != nil {
+	u, err := url.ParseRequestURI(targetURL)
+	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("URL must use HTTP or HTTPS scheme")
 	}
 
 	reqBody := ExaRequest{
