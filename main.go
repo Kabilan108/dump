@@ -569,7 +569,7 @@ func main() {
 			var paths []string
 			var dirTree *TreeNode
 
-			if treeFlag {
+			if treeFlag && !listOnly {
 				dirTree = &TreeNode{
 					name:     filepath.Base(absDir),
 					path:     absDir,
