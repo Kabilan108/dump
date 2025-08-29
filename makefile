@@ -1,8 +1,11 @@
+VERSION ?= $(shell git describe --tags --always --dirty)
+LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
+
 build/dump: $(shell find . -name '*.go')
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o build/dump .
+	CGO_ENABLED=0 go build $(LDFLAGS) -o build/dump .
 
 build/dump-linux-amd64: $(shell find . -name '*.go')
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/dump-linux-amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o build/dump-linux-amd64 .
 
 build: build/dump
 

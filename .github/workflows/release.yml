@@ -27,12 +27,13 @@ jobs:
         run: mkdir -p build
 
       - name: Build and package release
-        run: make release
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          make release VERSION=${VERSION}
         env:
           CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
-          VERSION: ${{ steps.version.outputs.version }}
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2

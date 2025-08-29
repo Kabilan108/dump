@@ -16,7 +16,7 @@
 
       buildPhase = ''
         runHook preBuild
-        make build
+        make build VERSION=${version}
         runHook postBuild
       '';
 

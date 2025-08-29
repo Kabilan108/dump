@@ -36,9 +36,12 @@ var (
 	listOnly      bool
 	treeFlag      bool
 	helpFlag      bool
+	versionFlag   bool
 	tmuxSelectors arrayFlags
 	tmuxLines     int
 )
+
+var version = "dev"
 
 const exaBaseURL = "https://api.exa.ai/contents"
 
@@ -645,6 +648,8 @@ func init() {
 	flag.BoolVar(&treeFlag, "tree", false, "show directory tree")
 	flag.BoolVar(&helpFlag, "h", false, "display help message")
 	flag.BoolVar(&helpFlag, "help", false, "display help message")
+	flag.BoolVar(&versionFlag, "v", false, "display version")
+	flag.BoolVar(&versionFlag, "version", false, "display version")
 
 	// tmux flags
 	flag.Var(&tmuxSelectors, "tmux", "tmux selector: current|all|%<id>|<win>.<pane>|@<pane_id> (repeatable)")
@@ -702,6 +707,11 @@ func main() {
 
 	if helpFlag {
 		flag.Usage()
+		os.Exit(0)
+	}
+
+	if versionFlag {
+		fmt.Printf("dump %s\n", version)
 		os.Exit(0)
 	}
 
