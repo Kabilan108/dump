@@ -89,7 +89,7 @@ dump -l
 dump -o md
 
 # Custom XML tag name
-dump --xml-tag source
+dump --file-tag source
 
 # Fetch content from URLs (requires EXA_API_KEY)
 dump -u https://docs.example.com/api
@@ -120,9 +120,12 @@ dump -h
 | `-o` | `--out-fmt` | Output format: xml or md (default "xml") |
 | `-t` | `--tree` | Show directory tree structure |
 | `-u` | `--url` | URL to fetch content from via Exa API (can be repeated) |
-| | `--xml-tag` | Custom XML tag name (only for xml output) |
+| | `--file-tag` | Custom XML tag name (only for xml output) |
+| | `--xml-tag` | [Deprecated] Alias for `--file-tag` |
 | | `--timeout` | Timeout in seconds for URL fetching (default 15) |
 | | `--live` | Force fresh content from URLs (livecrawl=always) |
+| | `--tmux` | Capture tmux panes: `current`/`all` (current window)/`%<id>`/`<win>.<pane>`/`@<pane_id>` (repeatable) |
+| | `--tmux-lines` | Lines of history per tmux pane (default 500; 0 = full) |
 
 ## Output Format
 
@@ -200,6 +203,42 @@ dump -u https://example.com --live
 
 # Custom timeout
 dump -u https://example.com --timeout 30
+```
+
+## Tmux Panes
+
+Dump tmux panes alongside files and URLs.
+
+```bash
+# Current pane
+dump --tmux current
+
+# Specific panes (by id and by window.pane)
+dump --tmux %1 --tmux 0.1
+
+# All panes in current window with full history
+dump --tmux all --tmux-lines 0
+
+# Limit history lines (default 500)
+dump --tmux current --tmux-lines 200
+```
+
+Markdown output for tmux panes is formatted as:
+
+````markdown
+```shell
+# tmux-pane: id='%1' session='mysess' window='0' pane='1'
+
+<pane content>
+```
+````
+
+XML output for tmux panes uses a fixed tag:
+
+```xml
+<tmux_pane id='%1' session='mysess' window='0' pane='1'>
+<pane content>
+</tmux_pane>
 ```
 
 ### URL Requirements

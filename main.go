@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -24,18 +24,20 @@ import (
 )
 
 var (
-	dirs         arrayFlags
-	patterns     arrayFlags
-	filterRgx    string
-	ignoreValues arrayFlags
-	urls         arrayFlags
-	liveCrawl    bool
-	timeoutSec   int
-	outfmt       string
-	xmlTag       string
-	listOnly     bool
-	treeFlag     bool
-	helpFlag     bool
+	dirs          arrayFlags
+	patterns      arrayFlags
+	filterRgx     string
+	ignoreValues  arrayFlags
+	urls          arrayFlags
+	liveCrawl     bool
+	timeoutSec    int
+	outfmt        string
+	fileTag       string
+	listOnly      bool
+	treeFlag      bool
+	helpFlag      bool
+	tmuxSelectors arrayFlags
+	tmuxLines     int
 )
 
 const exaBaseURL = "https://api.exa.ai/contents"
@@ -109,6 +111,14 @@ type Item struct {
 	content string
 }
 
+type TmuxPaneItem struct {
+	id      string
+	session string
+	window  string
+	pane    string
+	content string
+}
+
 type TreeNode struct {
 	name     string
 	path     string
@@ -153,15 +163,25 @@ func formatItem(item Item, format string, tag string) string {
 	}
 }
 
-func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
+func formatTmuxItem(item TmuxPaneItem, format string) string {
+	switch format {
+	case "md":
+		header := fmt.Sprintf("# tmux-pane: id='%s' session='%s' window='%s' pane='%s'\n\n",
+			item.id, item.session, item.window, item.pane)
+		return fmt.Sprintf("```shell\n%s%s```\n", header, item.content)
+	default:
+		return fmt.Sprintf("<tmux_pane id='%s' session='%s' window='%s' pane='%s'>\n%s</tmux_pane>\n",
+			item.id, item.session, item.window, item.pane, item.content)
 	}
-	defer file.Close()
+}
 
+// filterContent applies the line filter regex to a block of text.
+func filterContent(r io.Reader, filter *regexp.Regexp) (string, error) {
 	var buf bytes.Buffer
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(r)
+	// Increase max token size to handle very long lines (default ~64KB)
+	const maxLineSize = 10 * 1024 * 1024 // 10 MiB
+	scanner.Buffer(make([]byte, 1024), maxLineSize)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if filter != nil && filter.MatchString(line) {
@@ -170,14 +190,36 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
 		buf.WriteString(line)
 		buf.WriteByte('\n')
 	}
-
 	if err := scanner.Err(); err != nil {
-		return nil, errors.New("error reading file content")
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var content string
+	if filter != nil {
+		content, err = filterContent(file, filter)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		cb, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+		content = string(cb)
 	}
 
 	return &Item{
 		path:    displayPath,
-		content: buf.String(),
+		content: content,
 	}, nil
 }
 
@@ -302,7 +344,7 @@ func fetchURLsConcurrently(
 	close(urlsChan)
 
 	// start worker goroutines
-	for i := range maxConcurrency {
+	for i := 0; i < maxConcurrency; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -322,6 +364,158 @@ func fetchURLsConcurrently(
 			}
 		}(i)
 	}
+}
+
+// runCmd runs a command and returns its trimmed stdout.
+func runCmd(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if stderr.Len() > 0 {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return "", err
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
+}
+
+// resolveTmuxSelectors resolves tmux selectors to a unique list of pane IDs (e.g., %1).
+func resolveTmuxSelectors(selectors []string) ([]string, []error) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil, []error{fmt.Errorf("tmux binary not found: %w", err)}
+	}
+
+	seen := make(map[string]struct{})
+	var panes []string
+	var errs []error
+
+	for _, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		if sel == "" {
+			continue
+		}
+		var out string
+		var err error
+		switch sel {
+		case "current":
+			out, err = runCmd("tmux", "display-message", "-p", "-F", "#{pane_id}")
+		case "all":
+			// list panes in the current window of the current session (no -a)
+			out, err = runCmd("tmux", "list-panes", "-F", "#{pane_id}")
+		default:
+			// specific target (e.g., %1, 0.1, @uuid)
+			out, err = runCmd("tmux", "display-message", "-p", "-t", sel, "-F", "#{pane_id}")
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to resolve selector %q: %v", sel, err))
+			continue
+		}
+		// 'all' may return multiple lines
+		ids := strings.Split(out, "\n")
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			panes = append(panes, id)
+		}
+	}
+	return panes, errs
+}
+
+// getPaneMetadata fetches session, window, and pane indexes for a pane id.
+func getPaneMetadata(paneID string) (session, window, pane string, err error) {
+	// Fetch session, window, and pane in a single call (tab-separated)
+	out, err := runCmd("tmux", "display-message", "-p", "-t", paneID, "-F", "#{session_name}\t#{window_index}\t#{pane_index}")
+	if err != nil {
+		return "", "", "", err
+	}
+	parts := strings.Split(out, "\t")
+	if len(parts) != 3 {
+		return "", "", "", fmt.Errorf("unexpected tmux metadata format for %s: %q", paneID, out)
+	}
+	return parts[0], parts[1], parts[2], nil
+}
+
+// capturePaneContent captures the last N lines (or full history if N==0) from a pane.
+func capturePaneContent(paneID string, lastLines int) (string, error) {
+	args := []string{"capture-pane", "-pJ", "-t", paneID}
+	if lastLines > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", lastLines))
+	} else {
+		// full available history
+		args = append(args, "-S", "-", "-E", "-")
+	}
+	out, err := runCmd("tmux", args...)
+	if err != nil {
+		return "", err
+	}
+	return out + "\n", nil // normalize with trailing newline
+}
+
+// fetchTmuxConcurrently captures tmux panes via a worker pool and streams results.
+func fetchTmuxConcurrently(selectors []string, lines int, filter *regexp.Regexp, wg *sync.WaitGroup, results chan *TmuxPaneItem) (int, []error) {
+	panes, errs := resolveTmuxSelectors(selectors)
+	if len(panes) == 0 {
+		return 0, errs
+	}
+
+	jobs := make(chan string, len(panes))
+	const maxConcurrency = 6
+	workerCount := len(panes)
+	if workerCount > maxConcurrency {
+		workerCount = maxConcurrency
+	}
+
+	// enqueue jobs
+	for _, id := range panes {
+		jobs <- id
+	}
+	close(jobs)
+
+	// start workers
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				sess, win, pn, err := getPaneMetadata(id)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error getting tmux metadata for %s: %v\n", id, err)
+					continue
+				}
+				content, err := capturePaneContent(id, lines)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error capturing tmux pane %s: %v\n", id, err)
+					continue
+				}
+				if filter != nil {
+					content, err = filterContent(strings.NewReader(content), filter)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error filtering tmux pane %s: %v\n", id, err)
+						continue
+					}
+				}
+				results <- &TmuxPaneItem{
+					id:      id,
+					session: sess,
+					window:  win,
+					pane:    pn,
+					content: content,
+				}
+			}
+		}()
+	}
+
+	return len(panes), errs
 }
 
 func fetchURLContent(targetURL string, apiKey string, liveCrawl bool, timeoutSec int) (*Item, error) {
@@ -444,13 +638,17 @@ func init() {
 	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
 	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
 	flag.StringVar(&outfmt, "out-fmt", "xml", "output format: xml or md")
-	flag.StringVar(&xmlTag, "xml-tag", "file", "custom XML tag name (only for xml output)")
+	flag.StringVar(&fileTag, "file-tag", "file", "custom XML tag name for files (only for xml output)")
 	flag.BoolVar(&listOnly, "l", false, "list file paths only")
 	flag.BoolVar(&listOnly, "list", false, "list file paths only")
 	flag.BoolVar(&treeFlag, "t", false, "show directory tree")
 	flag.BoolVar(&treeFlag, "tree", false, "show directory tree")
 	flag.BoolVar(&helpFlag, "h", false, "display help message")
 	flag.BoolVar(&helpFlag, "help", false, "display help message")
+
+	// tmux flags
+	flag.Var(&tmuxSelectors, "tmux", "tmux selector: current|all|%<id>|<win>.<pane>|@<pane_id> (repeatable)")
+	flag.IntVar(&tmuxLines, "tmux-lines", 500, "lines of history per tmux pane (default 500; 0 = full)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: dump [options] [directories...]
@@ -472,9 +670,12 @@ options:
   -t|--tree              show directory tree structure
   -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
 
-  --xml-tag <string>     custom XML tag name for files (only for xml output) (default "file")
+  --file-tag <string>    custom XML tag name for files (only for xml output) (default "file")
   --timeout <int>        timeout in seconds for URL fetching (default 15)
   --live                 force fresh content from URLs (livecrawl=always vs fallback)
+
+  --tmux <selector>      capture tmux panes: current|all (current window)|%%<id>|<win>.<pane>|@<pane_id> (repeatable)
+  --tmux-lines <int>     number of history lines per tmux pane (default 500; 0 = full)
 
 environment variables:
   EXA_API_KEY            required for URL fetching via Exa API
@@ -488,6 +689,10 @@ examples:
   dump -u https://example.com   fetches and dumps URL content
   dump -d src -u https://...    dumps src directory and URL content
   dump -o md -f "^\s*#"         markdown format, skip comment lines
+
+  dump --tmux current           dump the current tmux pane
+  dump --tmux %%1 --tmux 0.1     dump specific tmux panes
+  dump --tmux all --tmux-lines 0  dump all panes in current window with full history
 `)
 	}
 }
@@ -502,6 +707,11 @@ func main() {
 
 	if outfmt != "xml" && outfmt != "md" {
 		fmt.Fprintf(os.Stderr, "invalid output format %q (must be xml or md)\n", outfmt)
+		os.Exit(1)
+	}
+
+	if tmuxLines < 0 {
+		fmt.Fprintf(os.Stderr, "invalid --tmux-lines %d (must be >= 0)\n", tmuxLines)
 		os.Exit(1)
 	}
 
@@ -522,8 +732,15 @@ func main() {
 		close(urlItems)
 	}()
 
+	// process tmux panes concurrently (if requested)
+	tmuxItems := make(chan *TmuxPaneItem, 8)
+	tmuxWg := sync.WaitGroup{}
+	var tmuxPaneCount int
+	var tmuxResolveErrs []error
+	// defer starting tmux capture until filter (if any) is compiled below
+
 	allDirs := append([]string{}, dirs...)
-	if len(allDirs) == 0 && len(urls) == 0 {
+	if len(allDirs) == 0 && len(urls) == 0 && len(tmuxSelectors) == 0 {
 		allDirs = []string{"."}
 	}
 
@@ -609,11 +826,41 @@ func main() {
 				fmt.Print(formatTreeOutput(do.tree, outfmt))
 			}
 			for _, item := range do.items {
-				fmt.Print(formatItem(*item, outfmt, xmlTag))
+				fmt.Print(formatItem(*item, outfmt, fileTag))
 			}
 		}
 	}
+
+	// Now that filter is compiled, if tmux capture was requested, start it. Otherwise close channel.
+	if len(tmuxSelectors) > 0 && !listOnly {
+		// Re-invoke concurrent capture now that we have compiled filter
+		// Note: tmuxWg and tmuxItems were initialized earlier; reuse them here
+		tmuxPaneCount, tmuxResolveErrs = fetchTmuxConcurrently(tmuxSelectors, tmuxLines, filter, &tmuxWg, tmuxItems)
+		// Always surface tmux resolution errors
+		if len(tmuxResolveErrs) > 0 {
+			for _, e := range tmuxResolveErrs {
+				fmt.Fprintf(os.Stderr, "%v\n", e)
+			}
+		}
+		go func() {
+			tmuxWg.Wait()
+			close(tmuxItems)
+		}()
+	} else {
+		close(tmuxItems)
+	}
+
+	for tmi := range tmuxItems {
+		fmt.Print(formatTmuxItem(*tmi, outfmt))
+	}
 	for result := range urlItems {
-		fmt.Print(formatItem(*result, outfmt, xmlTag))
+		fmt.Print(formatItem(*result, outfmt, fileTag))
+	}
+
+	// If tmux was the only requested source and it failed, exit non-zero
+	if len(tmuxSelectors) > 0 && len(dirs) == 0 && len(urls) == 0 && !listOnly {
+		if tmuxPaneCount == 0 {
+			os.Exit(1)
+		}
 	}
 }

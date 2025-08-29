@@ -17,6 +17,9 @@ clean:
 	rm -rf dump-linux-amd64
 	rm -f dump-linux-amd64.tar.gz
 
+test:
+	go test -v -cover ./...
+
 run: build
 	./build/dump
 
