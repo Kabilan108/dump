@@ -16,6 +16,7 @@ When working with LLMs, you often need to provide multiple files as context. Thi
 - Visualizing directory structure with tree view
 - Fetching content from URLs via Exa API
 - Providing flexible filtering and pattern matching
+- Filtering by file extension with `-e/--ext`
 
 ![demo](./assets/demo.gif)
 
@@ -73,6 +74,9 @@ dump -d src/ -d tests/
 # Include specific files using glob patterns
 dump -g "*.go" -g "*.md"
 
+# Include specific files using extensions (case-insensitive)
+dump -e go -e md
+
 # Add ignore patterns (can use multiple times)
 dump -i "*.log" -i "node_modules"
 
@@ -113,6 +117,7 @@ dump -h
 |------|-----------|-------------|
 | `-d` | `--dir` | Directory to scan (can be repeated) |
 | `-g` | `--glob` | Glob pattern to match files (can be repeated) |
+| `-e` | `--ext` | File extension to include (repeatable). Accepts `go`, `.go`, `MD`, etc. |
 | `-f` | `--filter` | Skip lines matching this regex |
 | `-h` | `--help` | Display help message |
 | `-i` | `--ignore` | Glob pattern to ignore files/dirs (can be repeated) |
@@ -121,7 +126,6 @@ dump -h
 | `-t` | `--tree` | Show directory tree structure |
 | `-u` | `--url` | URL to fetch content from via Exa API (can be repeated) |
 | | `--file-tag` | Custom XML tag name (only for xml output) |
-| | `--xml-tag` | [Deprecated] Alias for `--file-tag` |
 | | `--timeout` | Timeout in seconds for URL fetching (default 15) |
 | | `--live` | Force fresh content from URLs (livecrawl=always) |
 | | `--tmux` | Capture tmux panes: `current`/`all` (current window)/`%<id>`/`<win>.<pane>`/`@<pane_id>` (repeatable) |
@@ -268,6 +272,10 @@ dump -f "^\s*//" -l
 
 # Markdown output with custom patterns
 dump -o md -g "*.md" -g "*.txt" -i "node_modules"
+
+# Combine globs and extensions (OR semantics)
+# Includes files that match any glob OR any listed extension
+dump -g "**/*.test.js" -e go -e md
 ```
 
 ### Fetching URLs

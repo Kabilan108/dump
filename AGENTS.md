@@ -4,7 +4,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Project Overview
 
-This is a CLI tool called `dump` that recursively walks through directories and outputs text files in a structured format (XML or Markdown) for easy consumption by LLMs. The tool respects `.gitignore` files, provides flexible filtering options, supports directory tree visualization, and can also fetch content from URLs via the Exa API.
+This is a CLI tool called `dump` that recursively walks through directories and outputs text files in a structured format (XML or Markdown) for easy consumption by LLMs. The tool respects `.gitignore` files, provides flexible filtering options (glob and extension filters), supports directory tree visualization, and can also fetch content from URLs via the Exa API.
 
 ## Build and Development Commands
 
@@ -46,33 +46,39 @@ make run
 The codebase is a single-file Go application (`main.go`) with comprehensive test coverage (`main_test.go`). Key architectural components:
 
 ### Core Data Structures
-- `arrayFlags`: Custom flag type for handling repeated CLI arguments (e.g., multiple `-i` patterns, `-u` URLs)
-- `fileOutput`: Represents a file or URL with its path/URL and content for output formatting
-- `ExaRequest`: Structure for Exa API requests with URLs, text extraction settings, and livecrawl options
-- `ExaResponse`: Structure for parsing Exa API responses with results and context field
+- `arrayFlags`: Custom flag type for handling repeated CLI arguments (e.g., multiple `-i`, `-u`, `-e`)
+- `Item`: Represents a file or URL with its path/URL and content for output formatting
+- `TmuxPaneItem`: Represents a captured tmux pane and its content
+- `TreeNode` / `DirectoryOutput`: Structures for building and rendering a directory tree and collected items
+- `ExaRequest` / `ExaResponse`: Structures for Exa API requests and responses
 
 ### Key Functions
 - `isTextFile()`: Determines if a file is text-based by checking UTF-8 validity and absence of null bytes
 - `buildIgnoreList()`: Creates gitignore matcher from `.gitignore` file and additional patterns
 - `compilePatterns()`: Compiles glob patterns for file matching
-- `processDirectory()`: Concurrent directory walker that respects ignore patterns
+- `processDirectory()`: Directory walker that respects ignore patterns and applies filters (glob and extension)
 - `dumpFile()`: Reads file content and applies line-level filtering via regex
 - `fetchURLContent()`: Fetches web content from URLs using Exa API with proper error handling
-- `formatOutput()`: Formats file or URL content as XML or Markdown with appropriate attributes
-- `printTree()`: Recursively prints directory tree structure with proper indentation
-- `listFiles()`: Lists file paths without content when list mode is enabled
+- `formatItem()`: Formats file or URL content as XML or Markdown
+- `formatTreeOutput()`: Renders directory tree structure
+- `resolveTmuxSelectors()`, `capturePaneContent()`, `fetchTmuxConcurrently()`: tmux helpers for capturing terminal panes
 
 ### Concurrency Model
-The tool uses goroutines with `sync.WaitGroup` for concurrent directory processing. Each directory is processed in its own goroutine with mutex-protected shared state for collecting results. URL fetching is done sequentially after local file processing to respect API rate limits.
+The tool uses goroutines with `sync.WaitGroup` for concurrent directory processing. Each directory is processed in its own goroutine and results are funneled through channels. URL fetching uses a bounded worker pool with gentle staggering between requests to respect API rate limits. tmux pane capture also uses a small worker pool.
 
 ### CLI Interface
-Uses Go's `flag` package with custom `arrayFlags` type to support repeated arguments. Supports both short (`-i`, `-u`, `-t`, `-l`) and long (`--ignore`, `--url`, `--tree`, `--list`) flag formats. Features include:
+Uses Go's `flag` package with custom `arrayFlags` type to support repeated arguments. Supports both short (`-i`, `-u`, `-t`, `-l`, `-e`) and long (`--ignore`, `--url`, `--tree`, `--list`, `--ext`) flag formats. Features include:
 - Directory tree visualization (`-t/--tree`)
 - List-only mode (`-l/--list`) for file paths without content
-- Custom XML tag names (`--xml-tag`)
+- Extension filters (`-e/--ext`) with case-insensitive matching; can be repeated. Combines with glob filters using OR semantics.
+- Custom XML tag names (`--file-tag`)
 - Configurable timeout for URL fetching (`--timeout`)
 - Live crawl option for fresh URL content (`--live`)
 - URL functionality requires the `EXA_API_KEY` environment variable
+
+Notes on filtering semantics:
+- If neither globs nor extensions are provided, all text files (respecting ignore rules) are included.
+- If globs and/or extensions are provided, a file is included if it matches any glob OR any listed extension.
 
 ## Dependencies
 

@@ -26,6 +26,7 @@ import (
 var (
 	dirs          arrayFlags
 	patterns      arrayFlags
+	exts          arrayFlags
 	filterRgx     string
 	ignoreValues  arrayFlags
 	urls          arrayFlags
@@ -227,7 +228,7 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
 }
 
 func processDirectory(
-	baseDir string, globs []glob.Glob, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
+	baseDir string, globs []glob.Glob, extSet map[string]struct{}, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
 	items *[]*Item, pathList *[]string, treeRoot *TreeNode,
 ) error {
 	parentDir := filepath.Base(baseDir)
@@ -273,9 +274,24 @@ func processDirectory(
 			return nil
 		}
 
-		// check if file matches patterns
-		if len(globs) > 0 && !matchesAny(relPath, globs) {
-			return nil
+		// filtering: glob and extension filters combine with OR semantics
+		// include when:
+		// - no filters specified, or
+		// - matches any provided glob, or
+		// - matches any provided extension
+		matchesGlob := false
+		if len(globs) > 0 {
+			matchesGlob = matchesAny(relPath, globs)
+		}
+		matchesExt := false
+		if len(extSet) > 0 {
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(d.Name())), ".")
+			_, matchesExt = extSet[ext]
+		}
+		if len(globs) > 0 || len(extSet) > 0 {
+			if !(matchesGlob || matchesExt) {
+				return nil
+			}
 		}
 
 		displayPath := filepath.Join(parentDir, relPath)
@@ -631,6 +647,8 @@ func init() {
 	flag.Var(&dirs, "dir", "directory to scan (can be repeated)")
 	flag.Var(&patterns, "g", "glob pattern to match (can be repeated)")
 	flag.Var(&patterns, "glob", "glob pattern to match (can be repeated)")
+	flag.Var(&exts, "e", "file extension filter (e.g., md). Can be repeated")
+	flag.Var(&exts, "ext", "file extension filter (e.g., md). Can be repeated")
 	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
 	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
 	flag.Var(&urls, "u", "URL to fetch content from via Exa API (can be repeated)")
@@ -667,6 +685,7 @@ func init() {
 options:
   -d|--dir <value>       directory to scan (can be repeated)
   -g|--glob <value>      glob pattern to match files (can be repeated)
+  -e|--ext <value>       file extension filter like "md" or ".go" (repeatable)
   -f|--filter <string>   skip lines matching this regex
   -h|--help              display help message
   -i|--ignore <value>    glob pattern to ignore files/dirs (can be repeated)
@@ -689,6 +708,7 @@ examples:
   dump                          dumps current directory
   dump -d src -d docs           dumps src and docs directories
   dump -g "**.go" -g "**.md"    dumps only Go and Markdown files
+  dump -e md -e go              dumps only files with .md or .go extensions
   dump -l                       list file paths in the current directory
   dump -t                       dumps current directory and shows tree structure
   dump -u https://example.com   fetches and dumps URL content
@@ -770,6 +790,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// normalize extension filters into a set for quick lookup
+	extSet := make(map[string]struct{})
+	for _, e := range exts {
+		norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(e)), ".")
+		if norm == "" {
+			// allow matching files without an extension if user passes empty or "."
+			extSet[""] = struct{}{}
+			continue
+		}
+		extSet[norm] = struct{}{}
+	}
+
 	// process directories concurrently
 	dirOutputs := make(chan DirectoryOutput, len(allDirs))
 	var fileWg sync.WaitGroup
@@ -805,7 +837,7 @@ func main() {
 				}
 			}
 
-			err = processDirectory(absDir, globs, gitIgnore, filter, &items, &paths, dirTree)
+			err = processDirectory(absDir, globs, extSet, gitIgnore, filter, &items, &paths, dirTree)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to process directory %q: %v\n", dir, err)
 				return
