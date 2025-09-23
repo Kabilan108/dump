@@ -140,28 +140,28 @@ func TestFormatOutput(t *testing.T) {
 }
 
 func TestFormatTmuxItem(t *testing.T) {
-    t.Run("XML format", func(t *testing.T) {
-        ti := TmuxPaneItem{
-            id: "%1", session: "s", window: "0", pane: "1", content: "line1\nline2\n",
-        }
-        got := formatTmuxItem(ti, "xml")
-        expected := "<tmux_pane id='%1' session='s' window='0' pane='1'>\nline1\nline2\n</tmux_pane>\n"
-        if got != expected {
-            t.Errorf("formatTmuxItem(xml) = %q, expected %q", got, expected)
-        }
-    })
+	t.Run("XML format", func(t *testing.T) {
+		ti := TmuxPaneItem{
+			id: "%1", session: "s", window: "0", pane: "1", content: "line1\nline2\n",
+		}
+		got := formatTmuxItem(ti, "xml")
+		expected := "<tmux_pane id='%1' session='s' window='0' pane='1'>\nline1\nline2\n</tmux_pane>\n"
+		if got != expected {
+			t.Errorf("formatTmuxItem(xml) = %q, expected %q", got, expected)
+		}
+	})
 
-    t.Run("Markdown format", func(t *testing.T) {
-        ti := TmuxPaneItem{
-            id: "%2", session: "dev", window: "1", pane: "0", content: "echo hi\n",
-        }
-        got := formatTmuxItem(ti, "md")
-        expected := "```shell\n# tmux-pane: id='%2' session='dev' window='1' pane='0'\n\n" +
-            "echo hi\n```\n"
-        if got != expected {
-            t.Errorf("formatTmuxItem(md) = %q, expected %q", got, expected)
-        }
-    })
+	t.Run("Markdown format", func(t *testing.T) {
+		ti := TmuxPaneItem{
+			id: "%2", session: "dev", window: "1", pane: "0", content: "echo hi\n",
+		}
+		got := formatTmuxItem(ti, "md")
+		expected := "```shell\n# tmux-pane: id='%2' session='dev' window='1' pane='0'\n\n" +
+			"echo hi\n```\n"
+		if got != expected {
+			t.Errorf("formatTmuxItem(md) = %q, expected %q", got, expected)
+		}
+	})
 }
 
 func TestWriteContents(t *testing.T) {
