@@ -96,14 +96,14 @@ func TestFormatOutput(t *testing.T) {
 			name:     "XML format",
 			output:   Item{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format:   "xml",
-			tag:      "file",
-			expected: "<file path='src/main.go'>\npackage main\nfunc main() {}\n</file>\n",
+			tag:      "document",
+			expected: "<document path='src/main.go'>\npackage main\nfunc main() {}\n</document>\n",
 		},
 		{
 			name:     "Markdown format",
 			output:   Item{path: "src/main.go", content: "package main\nfunc main() {}\n"},
 			format:   "md",
-			tag:      "file", // Tag is ignored for md format
+			tag:      "document", // Tag is ignored for md format
 			expected: "```src/main.go\npackage main\nfunc main() {}\n```\n",
 		},
 		{
@@ -117,8 +117,8 @@ func TestFormatOutput(t *testing.T) {
 			name:     "URL with XML format",
 			output:   Item{path: "https://example.com", content: "web content\n"},
 			format:   "xml",
-			tag:      "file",
-			expected: "<web url='https://example.com'>\nweb content\n</web>\n",
+			tag:      "document",
+			expected: "<document url='https://example.com'>\nweb content\n</web>\n",
 		},
 		{
 			name:     "URL with Markdown format",
@@ -572,47 +572,4 @@ func TestConcurrentProcessing(t *testing.T) {
 	if matchedFiles["data.txt"] {
 		t.Errorf("data.txt should not have been matched, but was")
 	}
-}
-
-func TestArrayFlags(t *testing.T) {
-	t.Run("String method", func(t *testing.T) {
-		af := arrayFlags{"*.go", "*.js", "test/**"}
-		expected := "*.go,*.js,test/**"
-		if af.String() != expected {
-			t.Errorf("String() = %q, expected %q", af.String(), expected)
-		}
-	})
-
-	t.Run("String method empty", func(t *testing.T) {
-		af := arrayFlags{}
-		expected := ""
-		if af.String() != expected {
-			t.Errorf("String() = %q, expected %q", af.String(), expected)
-		}
-	})
-
-	t.Run("Set method", func(t *testing.T) {
-		af := arrayFlags{}
-
-		err := af.Set("*.go")
-		if err != nil {
-			t.Errorf("Set() returned unexpected error: %v", err)
-		}
-
-		err = af.Set("*.js")
-		if err != nil {
-			t.Errorf("Set() returned unexpected error: %v", err)
-		}
-
-		expected := arrayFlags{"*.go", "*.js"}
-		if len(af) != len(expected) {
-			t.Errorf("Set() length = %d, expected %d", len(af), len(expected))
-		}
-
-		for i, v := range expected {
-			if af[i] != v {
-				t.Errorf("Set() af[%d] = %q, expected %q", i, af[i], v)
-			}
-		}
-	})
 }

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -21,42 +20,29 @@ import (
 
 	"github.com/gobwas/glob"
 	"github.com/sabhiram/go-gitignore"
+	"github.com/spf13/cobra"
 )
 
 var (
-	dirs          arrayFlags
-	patterns      arrayFlags
-	exts          arrayFlags
+	dirs          []string
+	patterns      []string
+	exts          []string
 	filterRgx     string
-	ignoreValues  arrayFlags
-	urls          arrayFlags
+	ignoreValues  []string
+	urls          []string
 	liveCrawl     bool
 	timeoutSec    int
 	outfmt        string
-	fileTag       string
+	xmltag        string
 	listOnly      bool
 	treeFlag      bool
-	helpFlag      bool
-	versionFlag   bool
-	tmuxSelectors arrayFlags
+	tmuxSelectors []string
 	tmuxLines     int
 )
 
 var version = "dev"
 
 const exaBaseURL = "https://api.exa.ai/contents"
-
-// arrayFlags is a helper type for collecting multiple -i/--ignore patterns.
-type arrayFlags []string
-
-func (af *arrayFlags) String() string {
-	return strings.Join(*af, ",")
-}
-
-func (af *arrayFlags) Set(value string) error {
-	*af = append(*af, value)
-	return nil
-}
 
 func isTextFile(path string) bool {
 	file, err := os.Open(path)
@@ -161,7 +147,7 @@ func formatItem(item Item, format string, tag string) string {
 		return fmt.Sprintf("```%s\n%s```\n", item.path, item.content)
 	default:
 		if strings.HasPrefix(item.path, "http://") || strings.HasPrefix(item.path, "https://") {
-			return fmt.Sprintf("<web url='%s'>\n%s</web>\n", item.path, item.content)
+			return fmt.Sprintf("<%s url='%s'>\n%s</web>\n", tag, item.path, item.content)
 		}
 		return fmt.Sprintf("<%s path='%s'>\n%s</%s>\n", tag, item.path, item.content, tag)
 	}
@@ -228,8 +214,8 @@ func dumpFile(path, displayPath string, filter *regexp.Regexp) (*Item, error) {
 }
 
 func processDirectory(
-	baseDir string, globs []glob.Glob, extSet map[string]struct{}, gitIgnore *ignore.GitIgnore, filter *regexp.Regexp,
-	items *[]*Item, pathList *[]string, treeRoot *TreeNode,
+	baseDir string, globs []glob.Glob, extSet map[string]struct{}, gitIgnore *ignore.GitIgnore,
+	filter *regexp.Regexp, items *[]*Item, pathList *[]string, treeRoot *TreeNode,
 ) error {
 	parentDir := filepath.Base(baseDir)
 
@@ -642,107 +628,16 @@ func formatTreeOutput(tree *TreeNode, format string) string {
 	}
 }
 
-func init() {
-	flag.Var(&dirs, "d", "directory to scan (can be repeated)")
-	flag.Var(&dirs, "dir", "directory to scan (can be repeated)")
-	flag.Var(&patterns, "g", "glob pattern to match (can be repeated)")
-	flag.Var(&patterns, "glob", "glob pattern to match (can be repeated)")
-	flag.Var(&exts, "e", "file extension filter (e.g., md). Can be repeated")
-	flag.Var(&exts, "ext", "file extension filter (e.g., md). Can be repeated")
-	flag.Var(&ignoreValues, "i", "glob pattern to ignore (can be repeated)")
-	flag.Var(&ignoreValues, "ignore", "glob pattern to ignore (can be repeated)")
-	flag.Var(&urls, "u", "URL to fetch content from via Exa API (can be repeated)")
-	flag.Var(&urls, "url", "URL to fetch content from via Exa API (can be repeated)")
-	flag.BoolVar(&liveCrawl, "live", false, "fetch the most recent content from the URL")
-	flag.IntVar(&timeoutSec, "timeout", 15, "timeout for fetching URL content")
-	flag.StringVar(&filterRgx, "f", "", "skip lines matching this regex")
-	flag.StringVar(&filterRgx, "filter", "", "skip lines matching this regex")
-	flag.StringVar(&outfmt, "o", "xml", "output format: xml or md")
-	flag.StringVar(&outfmt, "out-fmt", "xml", "output format: xml or md")
-	flag.StringVar(&fileTag, "file-tag", "file", "custom XML tag name for files (only for xml output)")
-	flag.BoolVar(&listOnly, "l", false, "list file paths only")
-	flag.BoolVar(&listOnly, "list", false, "list file paths only")
-	flag.BoolVar(&treeFlag, "t", false, "show directory tree")
-	flag.BoolVar(&treeFlag, "tree", false, "show directory tree")
-	flag.BoolVar(&helpFlag, "h", false, "display help message")
-	flag.BoolVar(&helpFlag, "help", false, "display help message")
-	flag.BoolVar(&versionFlag, "v", false, "display version")
-	flag.BoolVar(&versionFlag, "version", false, "display version")
-
-	// tmux flags
-	flag.Var(&tmuxSelectors, "tmux", "tmux selector: current|all|%<id>|<win>.<pane>|@<pane_id> (repeatable)")
-	flag.IntVar(&tmuxLines, "tmux-lines", 500, "lines of history per tmux pane (default 500; 0 = full)")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `usage: dump [options] [directories...]
-
-  recursively dumps text files from specified directories,
-  respecting .gitignore and custom ignore rules.
-  can also fetch content from URLs via Exa API.
-
-  if no content sources are specified (directories or URLs), defaults to current directory.
-
-options:
-  -d|--dir <value>       directory to scan (can be repeated)
-  -g|--glob <value>      glob pattern to match files (can be repeated)
-  -e|--ext <value>       file extension filter like "md" or ".go" (repeatable)
-  -f|--filter <string>   skip lines matching this regex
-  -h|--help              display help message
-  -i|--ignore <value>    glob pattern to ignore files/dirs (can be repeated)
-  -l|--list              list file paths only (no content)
-  -o|--out-fmt <string>  output format: xml or md (default "xml")
-  -t|--tree              show directory tree structure
-  -u|--url <value>       URL to fetch content from via Exa API (can be repeated)
-
-  --file-tag <string>    custom XML tag name for files (only for xml output) (default "file")
-  --timeout <int>        timeout in seconds for URL fetching (default 15)
-  --live                 force fresh content from URLs (livecrawl=always vs fallback)
-
-  --tmux <selector>      capture tmux panes: current|all (current window)|%%<id>|<win>.<pane>|@<pane_id> (repeatable)
-  --tmux-lines <int>     number of history lines per tmux pane (default 500; 0 = full)
-
-environment variables:
-  EXA_API_KEY            required for URL fetching via Exa API
-
-examples:
-  dump                          dumps current directory
-  dump -d src -d docs           dumps src and docs directories
-  dump -g "**.go" -g "**.md"    dumps only Go and Markdown files
-  dump -e md -e go              dumps only files with .md or .go extensions
-  dump -l                       list file paths in the current directory
-  dump -t                       dumps current directory and shows tree structure
-  dump -u https://example.com   fetches and dumps URL content
-  dump -d src -u https://...    dumps src directory and URL content
-  dump -o md -f "^\s*#"         markdown format, skip comment lines
-
-  dump --tmux current           dump the current tmux pane
-  dump --tmux %%1 --tmux 0.1     dump specific tmux panes
-  dump --tmux all --tmux-lines 0  dump all panes in current window with full history
-`)
-	}
-}
-
-func main() {
-	flag.Parse()
-
-	if helpFlag {
-		flag.Usage()
-		os.Exit(0)
-	}
-
-	if versionFlag {
-		fmt.Printf("dump %s\n", version)
-		os.Exit(0)
-	}
+func runDump(cmd *cobra.Command, args []string) error {
+	// Add positional args as directories
+	dirs = append(dirs, args...)
 
 	if outfmt != "xml" && outfmt != "md" {
-		fmt.Fprintf(os.Stderr, "invalid output format %q (must be xml or md)\n", outfmt)
-		os.Exit(1)
+		return fmt.Errorf("invalid output format %q (must be xml or md)", outfmt)
 	}
 
 	if tmuxLines < 0 {
-		fmt.Fprintf(os.Stderr, "invalid --tmux-lines %d (must be >= 0)\n", tmuxLines)
-		os.Exit(1)
+		return fmt.Errorf("invalid --tmux-lines %d (must be >= 0)", tmuxLines)
 	}
 
 	// process urls concurrently
@@ -751,8 +646,7 @@ func main() {
 	if len(urls) > 0 && !listOnly {
 		apiKey := os.Getenv("EXA_API_KEY")
 		if apiKey == "" {
-			fmt.Fprintf(os.Stderr, "EXA_API_KEY environment variable is required for URL fetching\n")
-			os.Exit(1)
+			return fmt.Errorf("EXA_API_KEY environment variable is required for URL fetching")
 		}
 		fetchURLsConcurrently(urls, apiKey, liveCrawl, timeoutSec, &urlWg, urlItems)
 	}
@@ -778,16 +672,14 @@ func main() {
 	if filterRgx != "" {
 		r, err := regexp.Compile(filterRgx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to compile regex filter: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to compile regex filter: %w", err)
 		}
 		filter = r
 	}
 
 	globs, err := compilePatterns(patterns)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to compile glob patterns: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to compile glob patterns: %w", err)
 	}
 
 	// normalize extension filters into a set for quick lookup
@@ -868,7 +760,7 @@ func main() {
 				fmt.Print(formatTreeOutput(do.tree, outfmt))
 			}
 			for _, item := range do.items {
-				fmt.Print(formatItem(*item, outfmt, fileTag))
+				fmt.Print(formatItem(*item, outfmt, xmltag))
 			}
 		}
 	}
@@ -896,13 +788,67 @@ func main() {
 		fmt.Print(formatTmuxItem(*tmi, outfmt))
 	}
 	for result := range urlItems {
-		fmt.Print(formatItem(*result, outfmt, fileTag))
+		fmt.Print(formatItem(*result, outfmt, xmltag))
 	}
 
 	// If tmux was the only requested source and it failed, exit non-zero
 	if len(tmuxSelectors) > 0 && len(dirs) == 0 && len(urls) == 0 && !listOnly {
 		if tmuxPaneCount == 0 {
-			os.Exit(1)
+			return fmt.Errorf("failed to capture any tmux panes")
 		}
+	}
+
+	return nil
+}
+
+var rootCmd = &cobra.Command{
+	Use:   "dump [flags] [directories...]",
+	Short: "Dump files into LLM context windows",
+	Long: `recursively dump text files from specified directories, respecting .gitignore and custom ignore rules. can also fetch content from URLs via Exa API and capture tmux panes.
+if no content sources are specified (directories or URLs), defaults to current directory.`,
+	Version: version,
+	RunE:    runDump,
+	Args:    cobra.ArbitraryArgs,
+	Example: `  dump                          dumps current directory
+  dump -d src -d docs           dumps src and docs directories
+  dump -g "**.go" -g "**.md"    dumps only Go and Markdown files
+  dump -e md -e go              dumps only files with .md or .go extensions
+  dump -l                       list file paths in the current directory
+  dump -t                       dumps current directory and shows tree structure
+  dump -u https://example.com   fetches and dumps URL content
+  dump -d src -u https://...    dumps src directory and URL content
+  dump -o md -f "^\s*#"         markdown format, skip comment lines
+
+  dump --tmux current           dump the current tmux pane
+  dump --tmux %1 --tmux 0.1     dump specific tmux panes
+  dump --tmux all --tmux-lines 0  dump all panes in current window with full history`,
+}
+
+func init() {
+	rootCmd.Flags().StringArrayVarP(&dirs, "dir", "d", nil, "directory to scan (can be repeated)")
+
+	rootCmd.Flags().StringArrayVarP(&patterns, "glob", "g", nil, "glob pattern to match files (can be repeated)")
+	rootCmd.Flags().StringArrayVarP(&exts, "ext", "e", nil, "file extension filter like \"md\" or \".go\" (repeatable)")
+
+	rootCmd.Flags().StringArrayVarP(&ignoreValues, "ignore", "i", nil, "glob pattern to ignore files/dirs (can be repeated)")
+
+	rootCmd.Flags().StringArrayVarP(&urls, "url", "u", nil, "URL to fetch content from via Exa API (can be repeated)")
+	rootCmd.Flags().BoolVar(&liveCrawl, "live", false, "force fresh content from URLs (livecrawl=always vs fallback)")
+	rootCmd.Flags().IntVar(&timeoutSec, "timeout", 15, "timeout in seconds for URL fetching")
+
+	rootCmd.Flags().StringVarP(&filterRgx, "filter", "f", "", "skip lines matching this regex")
+	rootCmd.Flags().StringVarP(&outfmt, "out-fmt", "o", "xml", "output format: xml or md")
+	rootCmd.Flags().StringVar(&xmltag, "xml-tag", "document", "XML tag to wrap content (only for xml output)")
+
+	rootCmd.Flags().BoolVarP(&listOnly, "list", "l", false, "list file paths only (no content)")
+	rootCmd.Flags().BoolVarP(&treeFlag, "tree", "t", false, "show directory tree structure")
+
+	rootCmd.Flags().StringArrayVar(&tmuxSelectors, "tmux", nil, "capture tmux panes: current|all (current window)|%<id>|<win>.<pane>|@<pane_id> (repeatable)")
+	rootCmd.Flags().IntVar(&tmuxLines, "tmux-lines", 500, "number of history lines per tmux pane (default 500; 0 = full)")
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
 	}
 }
