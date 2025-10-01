@@ -93,7 +93,7 @@ dump -l
 dump -o md
 
 # Custom XML tag name
-dump --file-tag source
+dump --xml-tag source
 
 # Fetch content from URLs (requires EXA_API_KEY)
 dump -u https://docs.example.com/api
@@ -125,7 +125,8 @@ dump -h
 | `-o` | `--out-fmt` | Output format: xml or md (default "xml") |
 | `-t` | `--tree` | Show directory tree structure |
 | `-u` | `--url` | URL to fetch content from via Exa API (can be repeated) |
-| | `--file-tag` | Custom XML tag name (only for xml output) |
+| `-v` | `--version` | Display version information |
+| | `--xml-tag` | Custom XML tag name for wrapping content (only for xml output) |
 | | `--timeout` | Timeout in seconds for URL fetching (default 15) |
 | | `--live` | Force fresh content from URLs (livecrawl=always) |
 | | `--tmux` | Capture tmux panes: `current`/`all` (current window)/`%<id>`/`<win>.<pane>`/`@<pane_id>` (repeatable) |

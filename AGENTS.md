@@ -46,7 +46,6 @@ make run
 The codebase is a single-file Go application (`main.go`) with comprehensive test coverage (`main_test.go`). Key architectural components:
 
 ### Core Data Structures
-- `arrayFlags`: Custom flag type for handling repeated CLI arguments (e.g., multiple `-i`, `-u`, `-e`)
 - `Item`: Represents a file or URL with its path/URL and content for output formatting
 - `TmuxPaneItem`: Represents a captured tmux pane and its content
 - `TreeNode` / `DirectoryOutput`: Structures for building and rendering a directory tree and collected items
@@ -67,14 +66,16 @@ The codebase is a single-file Go application (`main.go`) with comprehensive test
 The tool uses goroutines with `sync.WaitGroup` for concurrent directory processing. Each directory is processed in its own goroutine and results are funneled through channels. URL fetching uses a bounded worker pool with gentle staggering between requests to respect API rate limits. tmux pane capture also uses a small worker pool.
 
 ### CLI Interface
-Uses Go's `flag` package with custom `arrayFlags` type to support repeated arguments. Supports both short (`-i`, `-u`, `-t`, `-l`, `-e`) and long (`--ignore`, `--url`, `--tree`, `--list`, `--ext`) flag formats. Features include:
+Uses the `cobra` CLI framework for command-line parsing. Supports both short and long flag formats. Features include:
 - Directory tree visualization (`-t/--tree`)
 - List-only mode (`-l/--list`) for file paths without content
 - Extension filters (`-e/--ext`) with case-insensitive matching; can be repeated. Combines with glob filters using OR semantics.
-- Custom XML tag names (`--file-tag`)
+- Custom XML tag names (`--xml-tag`) for wrapping content
 - Configurable timeout for URL fetching (`--timeout`)
 - Live crawl option for fresh URL content (`--live`)
 - URL functionality requires the `EXA_API_KEY` environment variable
+- Tmux pane capture (`--tmux`) with configurable history lines (`--tmux-lines`)
+- Built-in version flag (`-v/--version`) and help system (`-h/--help`)
 
 Notes on filtering semantics:
 - If neither globs nor extensions are provided, all text files (respecting ignore rules) are included.
@@ -84,6 +85,7 @@ Notes on filtering semantics:
 
 - `github.com/gobwas/glob`: Fast glob pattern matching
 - `github.com/sabhiram/go-gitignore`: Gitignore pattern parsing and matching
+- `github.com/spf13/cobra`: Modern CLI framework for building command-line tools
 
 ## Testing Strategy
 

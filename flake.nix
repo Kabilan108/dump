@@ -19,9 +19,9 @@
         {
           default = pkgs.buildGoModule rec {
             pname = "dump";
-            version = "0.5.3";
+            version = "0.6.0";
             src = ./.;
-            vendorHash = "sha256-A8PH2ITmJE8SD9KVTN76OyXZrmc/oq9JH8Vm0HFZWPw=";
+            vendorHash = "sha256-1oNrXunA2Wdue+/2cUG2YTtDtKnUsrmcORSy6iBVSkM=";
 
             buildPhase = ''
               runHook preBuild
